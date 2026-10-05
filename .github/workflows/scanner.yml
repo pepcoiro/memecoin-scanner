@@ -31,6 +31,7 @@ jobs:
           path: |
             scanner_state.json
             wallet_state.json
+            telegram_alert_state.json
           key: scanner-state-${{ github.run_id }}
           restore-keys: |
             scanner-state-
@@ -54,4 +55,5 @@ jobs:
           path: |
             scanner_state.json
             wallet_state.json
+            telegram_alert_state.json
           key: scanner-state-${{ github.run_id }}
