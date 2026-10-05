@@ -1147,8 +1147,13 @@ def telegram_send(text, pair_address=None):
         return False
 
 
-def build_telegram_alert(p, sec, smart_bonus_value, ranked):
+def build_telegram_alert(p, sec, smart_bonus_value, ranked, alert_level="INTERESTING"):
     b = p.get("baseToken") or {}
+    level_titles = {
+        "INTERESTING": "🟢 INTERESTING — DA VALUTARE",
+        "STRONG": "🔥 STRONG — SETUP INTERESSANTE",
+        "SMART": "🧠 SMART WALLET — SEGNALE FORTE",
+    }
     liq = num((p.get("liquidity") or {}).get("usd"))
     mc = num(p.get("marketCap") or p.get("fdv"))
     v1 = num((p.get("volume") or {}).get("h1"))
@@ -1159,7 +1164,7 @@ def build_telegram_alert(p, sec, smart_bonus_value, ranked):
     accel = f"{p.get('_accel', 0):.1f}x" if p.get("_has_accel_history") else "N/D"
 
     lines = [
-        "🚨 MEMECOIN SCANNER — FORTE OPPORTUNITÀ",
+        f"🚨 MEMECOIN SCANNER — {level_titles.get(alert_level, alert_level)}",
         "",
         f"🪙 {b.get('symbol','?')} — {b.get('name','?')}",
         f"⛓️ {p.get('chainId')} / {p.get('dexId')}",
@@ -1270,33 +1275,76 @@ def main():
         if p["_final_score"] >= 60 and sec["status"] == "PASS":
             print_trade_plan()
 
-    strong=[]
+    # TELEGRAM ALERT ENGINE
+    # Non aspettiamo il "token perfetto": segnaliamo tre livelli distinti.
+    # Un token deve comunque avere sicurezza PASS e non essere già troppo esteso.
+    interesting = []
+    strong = []
+    smart = []
+
     for p in rows:
-        # V8: acceleration is supportive, not mandatory. A strong candidate
-        # needs a high early score, meaningful burst/activity, smart-wallet
-        # evidence and a clean security result.
-        burst_ok = p.get("_burst",0) >= 1.5
-        accel_ok = (p.get("_accel",0) >= 1.15) if p.get("_has_accel_history") else False
-        p1=num((p.get("priceChange") or {}).get("h1")); p24=num((p.get("priceChange") or {}).get("h24"))
+        burst = p.get("_burst", 0)
+        accel_ok = (p.get("_accel", 0) >= 1.15) if p.get("_has_accel_history") else False
+        p1 = num((p.get("priceChange") or {}).get("h1"))
+        p24 = num((p.get("priceChange") or {}).get("h24"))
         not_too_late = p1 <= 80 and p24 <= 180
-        if p["_final_score"]>=78 and (burst_ok or accel_ok) and p["_smart_bonus"]>=4 and not_too_late:
-            sec=security(p)
-            if sec["status"]=="PASS":
-                strong.append((p,sec))
+        if not not_too_late:
+            continue
 
-    if strong:
-        p,sec=strong[0]
-        print(c("\n"+"═"*80,GREEN,True))
-        print(c("  ★ CANDIDATO FORTE ★",GREEN,True))
-        print(fmt(p,sec,p["_smart_bonus"],p["_smart_ranked"]))
-        print_trade_plan()
-        print(c("═"*80,GREEN,True))
+        # 🟢 Interesting: broad net. Catches setups worth opening manually.
+        if p["_final_score"] >= 65 and burst >= 2.0:
+            sec = security(p)
+            if sec["status"] == "PASS":
+                interesting.append((p, sec))
 
-        pair_address = p.get("pairAddress")
-        alert_text = build_telegram_alert(p, sec, p["_smart_bonus"], p["_smart_ranked"])
-        telegram_send(alert_text, pair_address=pair_address)
+        # 🔥 Strong: better score + stronger activity, but does NOT require
+        # an already-established smart wallet.
+        if p["_final_score"] >= 75 and (burst >= 3.0 or accel_ok):
+            sec = security(p)
+            if sec["status"] == "PASS":
+                strong.append((p, sec))
+
+        # 🧠 Smart: the highest-confidence category once the wallet engine
+        # has enough evidence.
+        if p["_final_score"] >= 75 and (burst >= 2.0 or accel_ok) and p["_smart_bonus"] >= 4:
+            sec = security(p)
+            if sec["status"] == "PASS":
+                smart.append((p, sec))
+
+    # One notification per token per scan. Highest category wins.
+    alerts_to_send = {}
+    for p, sec in interesting:
+        alerts_to_send[p.get("pairAddress")] = (p, sec, "INTERESTING")
+    for p, sec in strong:
+        alerts_to_send[p.get("pairAddress")] = (p, sec, "STRONG")
+    for p, sec in smart:
+        alerts_to_send[p.get("pairAddress")] = (p, sec, "SMART")
+
+    if alerts_to_send:
+        for pair_address, (p, sec, level) in sorted(
+            alerts_to_send.items(),
+            key=lambda item: (item[1][0].get("_final_score", 0), item[1][0].get("_burst", 0)),
+            reverse=True
+        ):
+            if level == "SMART":
+                title = "🧠 SMART WALLET"
+            elif level == "STRONG":
+                title = "🔥 STRONG"
+            else:
+                title = "🟢 INTERESTING"
+
+            print(c("\n"+"═"*80, GREEN, True))
+            print(c(f"  {title}", GREEN, True))
+            print(fmt(p, sec, p["_smart_bonus"], p["_smart_ranked"]))
+            print_trade_plan()
+            print(c("═"*80, GREEN, True))
+
+            alert_text = build_telegram_alert(
+                p, sec, p["_smart_bonus"], p["_smart_ranked"], alert_level=level
+            )
+            telegram_send(alert_text, pair_address=pair_address)
     else:
-        print("\nNessun candidato ha superato score + accelerazione + smart-wallet + sicurezza.")
+        print("\nNessun alert Telegram in questa scansione.")
 
 if __name__=="__main__":
     try:
