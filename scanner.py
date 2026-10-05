@@ -20,6 +20,7 @@ TIMEOUT = 20
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(SCRIPT_DIR, "scanner_state.json")
 WALLET_FILE = os.path.join(SCRIPT_DIR, "wallet_state.json")
+TELEGRAM_ALERT_FILE = os.path.join(SCRIPT_DIR, "telegram_alert_state.json")
 
 WATCH_CHAINS = {
     "ethereum", "bsc", "solana", "base", "arbitrum", "polygon",
@@ -52,6 +53,8 @@ GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", _CFG.get("GOPLUS_APP_KEY", "")).str
 GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", _CFG.get("GOPLUS_APP_SECRET", "")).strip()
 GOPLUS_ACCESS_TOKEN = None
 GOPLUS_ACCESS_EXPIRES = 0
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", _CFG.get("TELEGRAM_BOT_TOKEN", "")).strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", _CFG.get("TELEGRAM_CHAT_ID", "")).strip()
 
 MIN_LIQ = 20_000
 MAX_MC = 10_000_000
@@ -1085,6 +1088,110 @@ def wallet_stats(wallets):
     pending=sum(len(r.get("pending",[])) for r in wallets.values())
     return calls,wins,pending
 
+def _load_telegram_alerts():
+    try:
+        with open(TELEGRAM_ALERT_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_telegram_alerts(data):
+    try:
+        tmp = TELEGRAM_ALERT_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, TELEGRAM_ALERT_FILE)
+    except Exception:
+        pass
+
+
+def telegram_send(text, pair_address=None):
+    """Send a Telegram alert. Duplicate alerts for the same pair are suppressed for 60 minutes."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+
+    alerts = _load_telegram_alerts()
+    now = time.time()
+    if pair_address:
+        last = num(alerts.get(pair_address))
+        if last and now - last < 3600:
+            return False
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "disable_web_page_preview": False,
+    }
+    try:
+        r = session.post(url, json=payload, timeout=TIMEOUT)
+        if r.status_code != 200:
+            print(f"[Telegram] HTTP {r.status_code}: {r.text[:200]}")
+            return False
+        body = r.json()
+        if not body.get("ok"):
+            print(f"[Telegram] API error: {body}")
+            return False
+        if pair_address:
+            alerts[pair_address] = now
+            # Keep the state small.
+            cutoff = now - 7 * 86400
+            alerts = {k: v for k, v in alerts.items() if num(v) >= cutoff}
+            _save_telegram_alerts(alerts)
+        print("[Telegram] Alert inviato.")
+        return True
+    except Exception as e:
+        print(f"[Telegram] errore: {e}")
+        return False
+
+
+def build_telegram_alert(p, sec, smart_bonus_value, ranked):
+    b = p.get("baseToken") or {}
+    liq = num((p.get("liquidity") or {}).get("usd"))
+    mc = num(p.get("marketCap") or p.get("fdv"))
+    v1 = num((p.get("volume") or {}).get("h1"))
+    tx = (p.get("txns") or {}).get("h1") or {}
+    buys = int(num(tx.get("buys"))); sells = int(num(tx.get("sells")))
+    bp = 100 * buys / (buys + sells) if buys + sells else 0
+    pc = p.get("priceChange") or {}
+    accel = f"{p.get('_accel', 0):.1f}x" if p.get("_has_accel_history") else "N/D"
+
+    lines = [
+        "🚨 MEMECOIN SCANNER — FORTE OPPORTUNITÀ",
+        "",
+        f"🪙 {b.get('symbol','?')} — {b.get('name','?')}",
+        f"⛓️ {p.get('chainId')} / {p.get('dexId')}",
+        "",
+        f"🎯 EARLY SCORE: {p.get('_final_score', 0)}/100",
+        f"⚡ BURST: {p.get('_burst', 0):.1f}x",
+        f"📈 ACCEL: {accel}",
+        f"📊 BUY PRESSURE: {bp:.1f}%",
+        f"💰 MC: ${mc:,.0f}",
+        f"💧 LIQUIDITY: ${liq:,.0f}",
+        f"🔥 VOLUME 1H: ${v1:,.0f}",
+        f"📈 PRICE 1H: {num(pc.get('h1')):+.1f}%",
+        "",
+        f"🧠 SMART WALLET BONUS: +{smart_bonus_value}",
+    ]
+
+    if ranked:
+        lines.append(f"👛 Wallet qualificati: {len(ranked)}")
+        for _, wallet, wins, calls, wr, early_rate, avg_peak, resolved in ranked[:3]:
+            lines.append(f"  • {wallet[:8]}…{wallet[-6:]} — {wins}W/{calls} call | WR {wr*100:.0f}% | early {early_rate*100:.0f}%")
+    else:
+        lines.append("👛 Smart wallet: nessuno")
+
+    lines += [
+        "",
+        "🛡️ SECURITY: PASS",
+        "",
+        f"🔗 {p.get('url')}",
+    ]
+    return "\n".join(lines)
+
+
 def print_trade_plan():
     # Piano già pronto da replicare nella sezione Exit Strategy di Terminal.
     # TP: percentuale di profitto + percentuale Amount.
@@ -1184,6 +1291,10 @@ def main():
         print(fmt(p,sec,p["_smart_bonus"],p["_smart_ranked"]))
         print_trade_plan()
         print(c("═"*80,GREEN,True))
+
+        pair_address = p.get("pairAddress")
+        alert_text = build_telegram_alert(p, sec, p["_smart_bonus"], p["_smart_ranked"])
+        telegram_send(alert_text, pair_address=pair_address)
     else:
         print("\nNessun candidato ha superato score + accelerazione + smart-wallet + sicurezza.")
 
