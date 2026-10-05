@@ -47,6 +47,8 @@ jobs:
           GOPLUS_APP_SECRET: ${{ secrets.GOPLUS_APP_SECRET }}
           ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
           HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scanner.py
 
       - name: Save scanner state
