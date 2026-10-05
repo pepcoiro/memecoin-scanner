@@ -1126,11 +1126,17 @@ def telegram_send(text, pair_address=None):
         "disable_web_page_preview": False,
     }
     try:
+        print(f"[Telegram DEBUG] POST sendMessage | chat_id={TELEGRAM_CHAT_ID!r} | token_present={bool(TELEGRAM_BOT_TOKEN)} | text_len={len(text)}")
         r = session.post(url, json=payload, timeout=TIMEOUT)
+        print(f"[Telegram DEBUG] HTTP {r.status_code}")
+        print(f"[Telegram DEBUG] Response: {r.text[:1000]}")
         if r.status_code != 200:
-            print(f"[Telegram] HTTP {r.status_code}: {r.text[:200]}")
             return False
-        body = r.json()
+        try:
+            body = r.json()
+        except Exception as e:
+            print(f"[Telegram DEBUG] JSON parse error: {e}")
+            return False
         if not body.get("ok"):
             print(f"[Telegram] API error: {body}")
             return False
@@ -1270,135 +1276,60 @@ def main():
 
     for i,p in enumerate(rows,1):
         sec=security(p)
-        p["_security_result"] = sec
-        p["_security_status"] = sec.get("status", "UNVERIFIED")
         print(c(f"\n#{i}  EARLY FINAL  {p['_final_score']}/100  •  SMART +{p['_smart_bonus']}",score_color(p['_final_score']),True))
         print(fmt(p,sec,p["_smart_bonus"],p["_smart_ranked"]))
         if p["_final_score"] >= 60 and sec["status"] == "PASS":
             print_trade_plan()
 
     # TELEGRAM ALERT ENGINE
-    # Usa ESCLUSIVAMENTE i dati di security già calcolati sopra.
-    # Non richiama GoPlus una seconda volta: evita rate-limit e risultati incoerenti.
-    #
-    # 🔥 STRONG:
-    #   Score >= 75
-    #   Burst >= 2x oppure Accel >= 1.15x
-    #   Security PASS
-    #   non troppo esteso (+1h <= 80%, +24h <= 180%)
-    #
-    # 🟢 INTERESTING:
-    #   Score >= 60 + Burst >= 1.5x
-    #   oppure Score >= 65 + Buy Pressure >= 55%
-    #   Security PASS
-    #   non troppo esteso
-    #
-    # 🧠 SMART:
-    #   come STRONG + Smart Bonus >= 4
-
+    # Non aspettiamo il "token perfetto": segnaliamo tre livelli distinti.
+    # Un token deve comunque avere sicurezza PASS e non essere già troppo esteso.
     interesting = []
     strong = []
     smart = []
 
-    # La scansione sopra ha già interrogato GoPlus.
-    # Salviamo il risultato sul token per riutilizzarlo qui.
-    #
-    # IMPORTANTE: questa assegnazione è fatta nel blocco di display.
-    # Se per qualche motivo il campo non esiste, usiamo UNVERIFIED.
     for p in rows:
-        sec = p.get("_security_result") or {}
-        p["_security_status"] = sec.get("status", "UNVERIFIED")
-
-    for p in rows:
-        score = num(p.get("_final_score", 0))
-        burst = num(p.get("_burst", 0))
-        accel = num(p.get("_accel", 0))
-        has_accel = bool(p.get("_has_accel_history"))
+        burst = p.get("_burst", 0)
+        accel_ok = (p.get("_accel", 0) >= 1.15) if p.get("_has_accel_history") else False
         p1 = num((p.get("priceChange") or {}).get("h1"))
         p24 = num((p.get("priceChange") or {}).get("h24"))
-
-        tx = (p.get("txns") or {}).get("h1") or {}
-        buys = num(tx.get("buys"))
-        sells = num(tx.get("sells"))
-        total = buys + sells
-        buy_pressure = (100.0 * buys / total) if total else 0.0
-
-        security_status = p.get("_security_status", "UNVERIFIED")
         not_too_late = p1 <= 80 and p24 <= 180
-        accel_ok = has_accel and accel >= 1.15
-        sec_ok = security_status == "PASS"
-
-        symbol = (p.get("baseToken") or {}).get("symbol", "?")
-
-        # Debug esplicito: così sappiamo ESATTAMENTE perché un token
-        # entra o non entra nel motore Telegram.
-        print(
-            f"[Telegram Check] {symbol} | "
-            f"Score={score:.0f} | Burst={burst:.1f}x | "
-            f"Accel={accel:.1f}x{' (history)' if has_accel else ''} | "
-            f"Security={security_status} | "
-            f"1h={p1:+.1f}% | 24h={p24:+.1f}% | "
-            f"Buy={buy_pressure:.1f}%"
-        )
-
-        if not sec_ok:
-            print("  → NO ALERT: Security non PASS")
-            continue
-
         if not not_too_late:
-            print("  → NO ALERT: token troppo esteso")
             continue
 
-        # 🔥 STRONG
-        if score >= 75 and (burst >= 2.0 or accel_ok):
-            strong.append((p, p.get("_security_result") or {}))
-            print("  → 🔥 STRONG")
+        # 🟢 Interesting: broad net. Catches setups worth opening manually.
+        if p["_final_score"] >= 65 and burst >= 2.0:
+            sec = security(p)
+            if sec["status"] == "PASS":
+                interesting.append((p, sec))
 
-        # 🧠 SMART
-        if score >= 75 and (burst >= 2.0 or accel_ok) and num(p.get("_smart_bonus", 0)) >= 4:
-            smart.append((p, p.get("_security_result") or {}))
-            print("  → 🧠 SMART")
+        # 🔥 Strong: better score + stronger activity, but does NOT require
+        # an already-established smart wallet.
+        if p["_final_score"] >= 75 and (burst >= 3.0 or accel_ok):
+            sec = security(p)
+            if sec["status"] == "PASS":
+                strong.append((p, sec))
 
-        # 🟢 INTERESTING
-        if (
-            (score >= 60 and burst >= 1.5)
-            or
-            (score >= 65 and buy_pressure >= 55)
-        ):
-            interesting.append((p, p.get("_security_result") or {}))
-            print("  → 🟢 INTERESTING")
+        # 🧠 Smart: the highest-confidence category once the wallet engine
+        # has enough evidence.
+        if p["_final_score"] >= 75 and (burst >= 2.0 or accel_ok) and p["_smart_bonus"] >= 4:
+            sec = security(p)
+            if sec["status"] == "PASS":
+                smart.append((p, sec))
 
-    # One notification per token per scan.
-    # Priorità: SMART > STRONG > INTERESTING.
+    # One notification per token per scan. Highest category wins.
     alerts_to_send = {}
-
     for p, sec in interesting:
-        pair_address = p.get("pairAddress")
-        if pair_address:
-            alerts_to_send[pair_address] = (p, sec, "INTERESTING")
-
+        alerts_to_send[p.get("pairAddress")] = (p, sec, "INTERESTING")
     for p, sec in strong:
-        pair_address = p.get("pairAddress")
-        if pair_address:
-            alerts_to_send[pair_address] = (p, sec, "STRONG")
-
+        alerts_to_send[p.get("pairAddress")] = (p, sec, "STRONG")
     for p, sec in smart:
-        pair_address = p.get("pairAddress")
-        if pair_address:
-            alerts_to_send[pair_address] = (p, sec, "SMART")
+        alerts_to_send[p.get("pairAddress")] = (p, sec, "SMART")
 
     if alerts_to_send:
-        print(c(
-            f"\n[Telegram] {len(alerts_to_send)} candidato/i selezionato/i.",
-            GREEN, True
-        ))
-
         for pair_address, (p, sec, level) in sorted(
             alerts_to_send.items(),
-            key=lambda item: (
-                item[1][0].get("_final_score", 0),
-                item[1][0].get("_burst", 0)
-            ),
+            key=lambda item: (item[1][0].get("_final_score", 0), item[1][0].get("_burst", 0)),
             reverse=True
         ):
             if level == "SMART":
@@ -1408,40 +1339,16 @@ def main():
             else:
                 title = "🟢 INTERESTING"
 
-            print(c("\n" + "═"*80, GREEN, True))
+            print(c("\n"+"═"*80, GREEN, True))
             print(c(f"  {title}", GREEN, True))
-            print(fmt(
-                p,
-                sec,
-                p["_smart_bonus"],
-                p["_smart_ranked"]
-            ))
+            print(fmt(p, sec, p["_smart_bonus"], p["_smart_ranked"]))
             print_trade_plan()
             print(c("═"*80, GREEN, True))
 
             alert_text = build_telegram_alert(
-                p,
-                sec,
-                p["_smart_bonus"],
-                p["_smart_ranked"],
-                alert_level=level
+                p, sec, p["_smart_bonus"], p["_smart_ranked"], alert_level=level
             )
-
-            print(
-                f"[Telegram] Invio {level} → "
-                f"{(p.get('baseToken') or {}).get('symbol', '?')}"
-            )
-
-            sent = telegram_send(
-                alert_text,
-                pair_address=pair_address
-            )
-
-            if not sent:
-                print(
-                    f"[Telegram] FALLITO → "
-                    f"{(p.get('baseToken') or {}).get('symbol', '?')}"
-                )
+            telegram_send(alert_text, pair_address=pair_address)
     else:
         print("\nNessun alert Telegram in questa scansione.")
 
