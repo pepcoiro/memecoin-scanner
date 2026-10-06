@@ -1,4 +1,4 @@
-import os, json, time, traceback, requests, math
+import os, json, time, traceback, requests, math, base64, ast
 from datetime import datetime, timezone
 from collections import defaultdict
 
@@ -86,6 +86,19 @@ TP2_SELL_FRACTION = 0.30
 TP3_SELL_FRACTION = 0.30
 RUNNER_FRACTION = 0.10
 TRAILING_STOP_PCT = 0.30
+
+AUTO_TRADE_ENABLED = os.getenv("AUTO_TRADE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY", "").strip()
+SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com").strip()
+POSITIONS_FILE = os.path.join(SCRIPT_DIR, "positions.json")
+MIN_ENTRY_EUR = 30.0
+MAX_ENTRY_EUR = 100.0
+WALLET_BUDGET_FRACTION = 0.25
+SOL_RESERVE = 0.03
+MC_BUDGET_FRACTION = 0.0025
+LIQ_BUDGET_FRACTION = 0.01
+MAX_EXECUTION_PRICE_IMPACT = 0.02
+MAX_ENTRY_SLIPPAGE_BPS = 500
 DEFAULT_USD_TO_EUR = 0.892  # fallback; refreshed from ECB when available
 NATIVE_SYMBOLS = {"solana": "SOL"}
 _USD_TO_EUR_CACHE = {"rate": None, "ts": 0}
@@ -1193,6 +1206,242 @@ def adaptive_learning_bonus(p, data):
             break
     return max(-ADAPTIVE_BONUS_MAX,min(ADAPTIVE_BONUS_MAX,round(score,1))), f"learning-on/{used}"
 
+def _load_positions():
+    try:
+        with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+def _save_positions(data):
+    try:
+        tmp = POSITIONS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, POSITIONS_FILE)
+    except Exception as e:
+        print(f"[TRADING] save positions error: {e}")
+
+def _solana_keypair():
+    if not SOLANA_PRIVATE_KEY:
+        raise RuntimeError("SOLANA_PRIVATE_KEY non configurata")
+    from solders.keypair import Keypair
+    raw = SOLANA_PRIVATE_KEY.strip()
+    if raw.startswith("["):
+        return Keypair.from_bytes(bytes(ast.literal_eval(raw)))
+    if raw.startswith("0x"):
+        raw = raw[2:]
+    if len(raw) == 128:
+        try:
+            return Keypair.from_bytes(bytes.fromhex(raw))
+        except Exception:
+            pass
+    return Keypair.from_base58_string(raw)
+
+def solana_rpc(method, params=None):
+    payload = {"jsonrpc":"2.0","id":1,"method":method,"params":params or []}
+    r = session.post(SOLANA_RPC_URL, json=payload, timeout=TIMEOUT)
+    r.raise_for_status()
+    body = r.json()
+    if body.get("error"):
+        raise RuntimeError(f"Solana RPC {method}: {body['error']}")
+    return body.get("result")
+
+def solana_wallet_sol(pubkey):
+    result = solana_rpc("getBalance",[str(pubkey),{"commitment":"confirmed"}])
+    return num((result or {}).get("value")) / 1_000_000_000
+
+def solana_token_balance(pubkey,mint):
+    result = solana_rpc("getTokenAccountsByOwner",[str(pubkey),{"mint":mint},{"encoding":"jsonParsed","commitment":"confirmed"}])
+    total, decimals = 0, 0
+    for item in (result or {}).get("value",[]):
+        info = (((item.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {}
+        ta = info.get("tokenAmount") or {}
+        if ta.get("amount") is not None:
+            total += int(ta["amount"])
+            decimals = int(ta.get("decimals") or 0)
+    return total, decimals
+
+def jupiter_headers():
+    h={"Content-Type":"application/json"}
+    if JUPITER_API_KEY:
+        h["x-api-key"]=JUPITER_API_KEY
+    return h
+
+def jupiter_quote(input_mint,output_mint,amount_atomic,slippage_bps):
+    r=session.get(
+        f"{JUPITER_API_BASE}/swap/v1/quote",
+        params={"inputMint":input_mint,"outputMint":output_mint,"amount":str(int(amount_atomic)),"slippageBps":int(slippage_bps),"restrictIntermediateTokens":"true"},
+        headers=jupiter_headers(),timeout=TIMEOUT
+    )
+    r.raise_for_status()
+    data=r.json()
+    if data.get("error"):
+        raise RuntimeError(f"Jupiter quote: {data['error']}")
+    return data
+
+def jupiter_execute_swap(quote_response,wallet):
+    from solders.transaction import VersionedTransaction
+    r=session.post(
+        f"{JUPITER_API_BASE}/swap/v1/swap",
+        json={"quoteResponse":quote_response,"userPublicKey":str(wallet.pubkey()),"wrapAndUnwrapSol":True,"dynamicComputeUnitLimit":True,"dynamicSlippage":True},
+        headers=jupiter_headers(),timeout=TIMEOUT
+    )
+    r.raise_for_status()
+    data=r.json()
+    swap_tx=data.get("swapTransaction")
+    if not swap_tx:
+        raise RuntimeError(f"Jupiter swap transaction mancante: {data}")
+    tx=VersionedTransaction.from_bytes(base64.b64decode(swap_tx))
+    signed=VersionedTransaction(tx.message,[wallet])
+    raw=base64.b64encode(bytes(signed)).decode("ascii")
+    result=solana_rpc("sendTransaction",[raw,{"encoding":"base64","skipPreflight":False,"preflightCommitment":"confirmed","maxRetries":3}])
+    if not result:
+        raise RuntimeError("Solana RPC non ha restituito la signature")
+    return result
+
+def _slippage_for_pool(liq_usd):
+    liq=num(liq_usd)
+    if liq>=500_000: return 100
+    if liq>=200_000: return 150
+    if liq>=100_000: return 200
+    if liq>=50_000: return 300
+    return MAX_ENTRY_SLIPPAGE_BPS
+
+def _sol_usd_from_pair(p):
+    usd=num(p.get("priceUsd")); native=num(p.get("priceNative"))
+    return usd/native if usd>0 and native>0 else 0.0
+
+def calculate_entry_budget(p,wallet_sol,sol_usd):
+    if wallet_sol<=SOL_RESERVE or sol_usd<=0:
+        return {"eur":0.0,"usd":0.0,"sol":0.0,"reason":"budget insufficiente"}
+    available=max(0.0,wallet_sol-SOL_RESERVE)
+    wallet_cap=available*WALLET_BUDGET_FRACTION*sol_usd
+    mc=num(p.get("marketCap") or p.get("fdv"))
+    liq=num((p.get("liquidity") or {}).get("usd"))
+    impact_cap=estimate_max_position(p).get("usd",0.0)
+    caps=[
+        wallet_cap,
+        MAX_ENTRY_EUR/max(get_usd_to_eur_rate(),1e-9),
+        mc*MC_BUDGET_FRACTION if mc>0 else 0,
+        liq*LIQ_BUDGET_FRACTION if liq>0 else 0,
+        impact_cap
+    ]
+    positive=[x for x in caps if x>0]
+    usd=min(positive) if positive else 0.0
+    eur=usd*get_usd_to_eur_rate()
+    if eur<MIN_ENTRY_EUR:
+        return {"eur":eur,"usd":usd,"sol":usd/sol_usd,"reason":f"sotto minimo EUR {MIN_ENTRY_EUR:.0f}"}
+    return {"eur":eur,"usd":usd,"sol":usd/sol_usd,"reason":"OK","wallet_cap_usd":wallet_cap,"mc_cap_usd":mc*MC_BUDGET_FRACTION,"liq_cap_usd":liq*LIQ_BUDGET_FRACTION,"impact_cap_usd":impact_cap}
+
+def execute_entry(p):
+    if not AUTO_TRADE_ENABLED: return None
+    wallet=_solana_keypair(); pubkey=wallet.pubkey()
+    wallet_sol=solana_wallet_sol(pubkey)
+    sol_usd=_sol_usd_from_pair(p)
+    sizing=calculate_entry_budget(p,wallet_sol,sol_usd)
+    if sizing.get("reason")!="OK":
+        print(f"[TRADING] NO BUY {p.get('baseToken',{}).get('symbol','?')}: {sizing.get('reason')}")
+        return None
+    mint=(p.get("baseToken") or {}).get("address")
+    if not mint: return None
+    lamports=int(sizing["sol"]*1_000_000_000)
+    quote=jupiter_quote(SOL_MINT,mint,lamports,_slippage_for_pool((p.get("liquidity") or {}).get("usd")))
+    impact=num(quote.get("priceImpactPct"))
+    if impact>MAX_EXECUTION_PRICE_IMPACT:
+        print(f"[TRADING] NO BUY: Jupiter impact {impact*100:.2f}%")
+        return None
+    out_amount=int(quote.get("outAmount") or 0)
+    if out_amount<=0: return None
+    signature=jupiter_execute_swap(quote,wallet)
+    time.sleep(2)
+    received_atomic,decimals=solana_token_balance(pubkey,mint)
+    if received_atomic<=0: received_atomic=out_amount
+    received=received_atomic/(10**decimals)
+    entry_sol=lamports/1_000_000_000
+    entry_usd=entry_sol*sol_usd
+    entry_price=entry_usd/received if received>0 else num(p.get("priceUsd"))
+    pos={"mint":mint,"symbol":(p.get("baseToken") or {}).get("symbol","?"),"name":(p.get("baseToken") or {}).get("name","?"),"pair":p.get("pairAddress"),"entry_ts":time.time(),"entry_signature":signature,"entry_sol":entry_sol,"entry_usd":entry_usd,"entry_eur":entry_usd*get_usd_to_eur_rate(),"entry_price_usd":entry_price,"token_decimals":decimals,"initial_tokens":received,"remaining_tokens":received,"highest_price_usd":entry_price,"tp1_done":False,"tp2_done":False,"tp3_done":False,"closed":False}
+    positions=_load_positions(); positions[mint]=pos; _save_positions(positions)
+    print(f"[TRADING] BUY {pos['symbol']} | EUR {pos['entry_eur']:.2f} | MC {num(p.get('marketCap')):,.0f} | LIQ {num((p.get('liquidity') or {}).get('usd')):,.0f} | tx {signature}")
+    return pos
+
+def execute_exit(position,fraction,reason,current_price_usd):
+    wallet=_solana_keypair(); pubkey=wallet.pubkey()
+    atomic,decimals=solana_token_balance(pubkey,position["mint"])
+    if atomic<=0: return False
+    amount=int(atomic*min(1.0,max(0.0,fraction)))
+    if amount<=0: return False
+    quote=jupiter_quote(position["mint"],SOL_MINT,amount,500)
+    impact=num(quote.get("priceImpactPct"))
+    if impact>MAX_EXECUTION_PRICE_IMPACT:
+        print(f"[TRADING] EXIT BLOCKED {position['symbol']}: impact {impact*100:.2f}%")
+        return False
+    signature=jupiter_execute_swap(quote,wallet)
+    sold=amount/(10**decimals)
+    position["remaining_tokens"]=max(0.0,num(position.get("remaining_tokens"))-sold)
+    position.setdefault("exits",[]).append({"ts":time.time(),"reason":reason,"price_usd":current_price_usd,"fraction_of_current":fraction,"sold_tokens":sold,"signature":signature})
+    if position["remaining_tokens"]<=0:
+        position["closed"]=True; position["closed_ts"]=time.time()
+    print(f"[TRADING] SELL {position['symbol']} | {reason} | {fraction*100:.0f}% current | tx {signature}")
+    return True
+
+def manage_open_positions():
+    if not AUTO_TRADE_ENABLED or not SOLANA_PRIVATE_KEY: return
+    positions=_load_positions()
+    if not positions: return
+    changed=False
+    for mint,position in list(positions.items()):
+        if position.get("closed"): continue
+        try:
+            data=get_json(f"{BASE}/latest/dex/tokens/{mint}")
+            pairs=data.get("pairs") or []
+            if not pairs: continue
+            pair=max(pairs,key=lambda x:num((x.get("liquidity") or {}).get("usd")))
+            price=num(pair.get("priceUsd")); entry=num(position.get("entry_price_usd"))
+            if price<=0 or entry<=0: continue
+            high=max(num(position.get("highest_price_usd")),price)
+            position["highest_price_usd"]=high
+            initial=max(num(position.get("initial_tokens")),0.0)
+            remaining=max(num(position.get("remaining_tokens")),0.0)
+            for key,target,original_fraction in [("tp1_done",1.30,0.30),("tp2_done",1.60,0.30),("tp3_done",1.90,0.30)]:
+                if position.get(key) or price<entry*target: continue
+                if remaining<=0 or initial<=0:
+                    position[key]=True; continue
+                desired=initial*original_fraction
+                current_fraction=min(1.0,desired/remaining)
+                if execute_exit(position,current_fraction,f"TP {target:.2f}x",price):
+                    position[key]=True; remaining=num(position.get("remaining_tokens")); changed=True
+            if num(position.get("remaining_tokens"))>0 and high>entry and price<=high*(1.0-TRAILING_STOP_PCT):
+                if execute_exit(position,1.0,"TRAILING STOP -30%",price):
+                    position["closed"]=True; position["closed_ts"]=time.time(); changed=True
+            position["last_price_usd"]=price; position["last_check_ts"]=time.time()
+        except Exception as e:
+            print(f"[TRADING] monitor error {position.get('symbol','?')}: {e}")
+    if changed or positions: _save_positions(positions)
+
+def auto_trade_best_candidate(rows):
+    if not AUTO_TRADE_ENABLED or not SOLANA_PRIVATE_KEY: return
+    positions=_load_positions()
+    if any(not p.get("closed") for p in positions.values()):
+        print("[TRADING] posizione aperta: nessun nuovo BUY")
+        return
+    eligible=[]
+    for p in rows:
+        sec=p.get("_security_result") or {}
+        if sec.get("status")!="PASS": continue
+        if num(sec.get("quality_penalty"))>=12: continue
+        if p.get("_final_score",0)<60: continue
+        if num((p.get("priceChange") or {}).get("h1"))>ALERT_MAX_P1: continue
+        if num((p.get("priceChange") or {}).get("h24"))>ALERT_MAX_P24: continue
+        eligible.append(p)
+    if not eligible:
+        print("[TRADING] Nessun candidato idoneo al BUY automatico.")
+        return
+    execute_entry(max(eligible,key=lambda x:(x.get("_final_score",0),x.get("_burst",0))))
+
+
 def _load_telegram_alerts():
     try:
         with open(TELEGRAM_ALERT_FILE, "r", encoding="utf-8") as f:
@@ -1370,6 +1619,7 @@ def build_telegram_alert(p, sec, smart_bonus_value, ranked, alert_level="INTERES
 
 def main():
     enable_ansi()
+    manage_open_positions()
     print(c("═"*80, CYAN))
     print(c("  MEMECOIN SCANNER V11", CYAN, True))
     print(c("  SOLANA  +  SMART WALLET  +  EARLY SCORE  +  LEARNING  +  GOPLUS  +  JUPITER", WHITE))
@@ -1589,6 +1839,8 @@ def main():
                 print("[Telegram] FALLITO: controlla il debug HTTP/API sopra.")
     else:
         print("\nNessun alert Telegram in questa scansione.")
+
+    auto_trade_best_candidate(rows)
 
 if __name__=="__main__":
     try:
