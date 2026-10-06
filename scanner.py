@@ -24,14 +24,9 @@ TELEGRAM_ALERT_FILE = os.path.join(SCRIPT_DIR, "telegram_alert_state.json")
 OUTCOME_FILE = os.path.join(SCRIPT_DIR, "alert_outcomes.json")
 ANALYTICS_FILE = os.path.join(SCRIPT_DIR, "scanner_analytics.json")
 
-WATCH_CHAINS = {
-    "ethereum", "bsc", "solana", "base", "arbitrum", "polygon",
-    "avalanche", "optimism", "linea", "zksync", "monad"
-}
+WATCH_CHAINS = {"solana"}
 
-# V3: smart-wallet discovery currently uses Alchemy on EVM chains.
-# Solana remains supported by the market scanner; wallet intelligence for Solana
-# will be added with Helius in the next module.
+# Solana-only scanner. Market intelligence and wallet intelligence are scoped to Solana.
 def load_config_file():
     cfg = {}
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "CONFIGURAZIONE.txt")
@@ -49,7 +44,6 @@ def load_config_file():
 
 _CFG = load_config_file()
 
-ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", _CFG.get("ALCHEMY_API_KEY", "")).strip()
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", _CFG.get("HELIUS_API_KEY", "")).strip()
 GOPLUS_APP_KEY = os.getenv("GOPLUS_APP_KEY", _CFG.get("GOPLUS_APP_KEY", "")).strip()
 GOPLUS_APP_SECRET = os.getenv("GOPLUS_APP_SECRET", _CFG.get("GOPLUS_APP_SECRET", "")).strip()
@@ -57,6 +51,9 @@ GOPLUS_ACCESS_TOKEN = None
 GOPLUS_ACCESS_EXPIRES = 0
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", _CFG.get("TELEGRAM_BOT_TOKEN", "")).strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", _CFG.get("TELEGRAM_CHAT_ID", "")).strip()
+JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", _CFG.get("JUPITER_API_KEY", "")).strip()
+JUPITER_API_BASE = "https://api.jup.ag"
+SOL_MINT = "So11111111111111111111111111111111111111112"
 
 MIN_LIQ = 20_000
 MAX_MC = 10_000_000
@@ -78,12 +75,7 @@ TRACK_UPDATE_LIMIT = 300
 # Position sizing: estimated maximum entry size for ~2% AMM price impact.
 MAX_POSITION_PRICE_IMPACT = 0.02
 DEFAULT_USD_TO_EUR = 0.892  # fallback; refreshed from ECB when available
-NATIVE_SYMBOLS = {
-    "ethereum": "ETH", "base": "ETH", "arbitrum": "ETH",
-    "optimism": "ETH", "linea": "ETH", "zksync": "ETH",
-    "bsc": "BNB", "solana": "SOL", "polygon": "POL",
-    "avalanche": "AVAX", "monad": "MON",
-}
+NATIVE_SYMBOLS = {"solana": "SOL"}
 _USD_TO_EUR_CACHE = {"rate": None, "ts": 0}
 
 SMART_WALLET_BONUS_MAX = 22
@@ -100,28 +92,6 @@ ALERT_MAX_P24 = 150
 session = requests.Session()
 session.headers.update({"User-Agent": "MemecoinScanner/3.0"})
 
-ALCHEMY_HOSTS = {
-    "ethereum": "eth-mainnet.g.alchemy.com",
-    "base": "base-mainnet.g.alchemy.com",
-    "arbitrum": "arb-mainnet.g.alchemy.com",
-    "polygon": "polygon-mainnet.g.alchemy.com",
-    "optimism": "opt-mainnet.g.alchemy.com",
-    "bsc": "bnb-mainnet.g.alchemy.com",
-    "avalanche": "avax-mainnet.g.alchemy.com",
-    "linea": "linea-mainnet.g.alchemy.com",
-}
-
-# Approximate block times, only used to choose a recent starting block.
-BLOCK_SECONDS = {
-    "ethereum": 12,
-    "base": 2,
-    "arbitrum": 1,
-    "polygon": 2,
-    "optimism": 2,
-    "bsc": 1.5,
-    "avalanche": 2,
-    "linea": 3,
-}
 
 def num(x):
     try:
@@ -488,121 +458,6 @@ def discover():
     rows.sort(key=lambda x: (x["_score"], x["_accel"]), reverse=True)
     return rows[:TOP_N]
 
-def alchemy_rpc(chain, method, params):
-    host = ALCHEMY_HOSTS.get(chain)
-    if not host or not ALCHEMY_API_KEY:
-        return None
-    url = f"https://{host}/v2/{ALCHEMY_API_KEY}"
-    payload = {"jsonrpc":"2.0","id":1,"method":method,"params":params}
-    for attempt in range(3):
-        try:
-            r = session.post(url, json=payload, timeout=TIMEOUT)
-            if r.status_code == 429:
-                time.sleep(min(8, 1.5 * (attempt + 1)))
-                continue
-            if r.status_code != 200:
-                return None
-            data = r.json()
-            if data.get("error"):
-                code = num((data.get("error") or {}).get("code"))
-                if code in {-32005, 429} and attempt < 2:
-                    time.sleep(min(8, 1.5 * (attempt + 1)))
-                    continue
-                return None
-            return data.get("result")
-        except Exception:
-            if attempt < 2:
-                time.sleep(0.8 * (2 ** attempt))
-    return None
-
-def hex_block(n):
-    return hex(max(0, int(n)))
-
-def early_buyers(p):
-    """Find wallets receiving the token directly from the DEX pair during its first hour."""
-    if not ALCHEMY_API_KEY:
-        return []
-
-    chain = str(p.get("chainId","")).lower()
-    if chain not in ALCHEMY_HOSTS:
-        return []
-
-    token = (p.get("baseToken") or {}).get("address")
-    pair = p.get("pairAddress")
-    created_ms = p.get("pairCreatedAt")
-    if not token or not pair or not created_ms:
-        return []
-
-    age = age_hours(p)
-    # Only inspect young-ish tokens. Older tokens need a historical indexer/window
-    # and would be too expensive to scan indiscriminately.
-    if age > 72:
-        return []
-
-    block_sec = BLOCK_SECONDS.get(chain, 3)
-    latest_hex = alchemy_rpc(chain, "eth_blockNumber", [])
-    if not latest_hex:
-        return []
-
-    latest = int(latest_hex, 16)
-    lookback = int((age * 3600 + 3600) / block_sec)
-    start = max(0, latest - lookback)
-
-    params = [{
-        "fromBlock": hex_block(start),
-        "toBlock": "latest",
-        "contractAddresses": [token],
-        "category": ["erc20"],
-        "withMetadata": True,
-        "excludeZeroValue": True,
-        "maxCount": "0x3e8"
-    }]
-
-    result = alchemy_rpc(chain, "alchemy_getAssetTransfers", params)
-    if not result:
-        return []
-
-    transfers = result.get("transfers", [])
-    buyers = []
-    seen = set()
-    end_ms = created_ms + EARLY_WINDOW_MIN*60*1000
-
-    for t in transfers:
-        frm = (t.get("from") or "").lower()
-        to = (t.get("to") or "").lower()
-        if frm != str(pair).lower() or not to:
-            continue
-        meta = t.get("metadata") or {}
-        ts = meta.get("blockTimestamp")
-        if ts:
-            try:
-                tms = int(float(ts)*1000) if isinstance(ts,(int,float)) else int(ts.replace("Z","+00:00").replace("T"," ").split("+")[0].replace("-",""))
-            except:
-                tms = None
-        else:
-            tms = None
-
-        # If metadata parsing is unavailable, keep the transfer only for very young
-        # pairs; Alchemy's indexed ordering still gives a useful approximation.
-        if tms is not None and not (created_ms <= tms <= end_ms):
-            continue
-
-        wallet = to
-        if wallet in seen:
-            continue
-        # Ignore obvious burn/zero addresses.
-        if wallet in {
-            "0x0000000000000000000000000000000000000000",
-            "0x000000000000000000000000000000000000dead"
-        }:
-            continue
-        seen.add(wallet)
-        buyers.append(wallet)
-        if len(buyers) >= MAX_WALLETS_PER_TOKEN:
-            break
-
-    return buyers
-
 def wallet_entry_quality(p):
     """Classify whether a wallet entry looks genuinely early.
     This is intentionally conservative: a wallet found in a token that is already
@@ -727,36 +582,24 @@ def rank_wallets_for_token(wallets, chain, buyers):
     return ranked[:5]
 
 def update_smart_wallets(rows):
-    """V9 Smart Wallet Engine.
-    Wallet calls are first stored as PENDING at the observed entry MC. They only
-    become wins after the token later reaches 2x. This prevents the old V8 bug
-    where a wallet could be labelled smart merely because the token was already
-    pumping when we observed it.
-    """
-    wallets=load_wallets(); evidence={}
-
+    """Solana smart-wallet engine using Helius only."""
+    wallets = load_wallets()
+    evidence = {}
+    if not HELIUS_API_KEY:
+        save_wallets(wallets)
+        return evidence, wallets
     for p in rows:
-        chain=str(p.get("chainId","")).lower()
-        if chain in ALCHEMY_HOSTS and ALCHEMY_API_KEY:
-            buyers=early_buyers(p)
-            token=(p.get("baseToken") or {}).get("address")
-            if buyers and token:
-                for w in buyers:
-                    _update_wallet_record(wallets,chain,w,token,p)
-                evidence[p.get("pairAddress")]=rank_wallets_for_token(wallets,chain,buyers)
-
-    if HELIUS_API_KEY:
-        for p in rows:
-            if str(p.get("chainId","")).lower()!="solana": continue
-            buyers=solana_early_buyers(p)
-            mint=(p.get("baseToken") or {}).get("address")
-            if not buyers or not mint: continue
-            for w in buyers:
-                _update_wallet_record(wallets,"solana",w,mint,p)
-            evidence[p.get("pairAddress")]=rank_wallets_for_token(wallets,"solana",buyers)
-
+        if str(p.get("chainId", "")).lower() != "solana":
+            continue
+        buyers = solana_early_buyers(p)
+        mint = (p.get("baseToken") or {}).get("address")
+        if not buyers or not mint:
+            continue
+        for w in buyers:
+            _update_wallet_record(wallets, "solana", w, mint, p)
+        evidence[p.get("pairAddress")] = rank_wallets_for_token(wallets, "solana", buyers)
     save_wallets(wallets)
-    return evidence,wallets
+    return evidence, wallets
 
 def smart_bonus(p,evidence):
     ranked=evidence.get(p.get("pairAddress"),[])
@@ -943,15 +786,6 @@ def _extract_goplus_token(result, address):
                     return item
     return None
 
-def goplus_evm(chain_id, address):
-    if not chain_id or not address:
-        return None
-    result = goplus_request(
-        f"https://api.gopluslabs.io/api/v1/token_security/{chain_id}",
-        {"contract_addresses": address}
-    )
-    return _extract_goplus_token(result, address)
-
 def goplus_solana(address):
     if not address:
         return None
@@ -963,49 +797,33 @@ def goplus_solana(address):
 
 
 def security(p):
-    chain = str(p.get("chainId","")).lower()
+    chain = str(p.get("chainId", "")).lower()
     address = (p.get("baseToken") or {}).get("address")
-    if not address:
-        return {"status":"UNKNOWN","reason":"contract missing"}
-
-    chain_map = {
-        "ethereum":"1", "bsc":"56", "polygon":"137", "arbitrum":"42161",
-        "optimism":"10", "base":"8453", "avalanche":"43114",
-        "linea":"59144", "zksync":"324", "monad":"143"
-    }
-
-    if chain == "solana":
-        data = goplus_solana(address)
-    elif chain in chain_map:
-        data = goplus_evm(chain_map[chain], address)
-    else:
-        data = None
-
+    if chain != "solana" or not address:
+        return {"status": "UNKNOWN", "reason": "Solana contract missing"}
+    data = goplus_solana(address)
     if not data:
-        return {"status":"UNVERIFIED", "reason":"GoPlus: nessun dato per questo token"}
-
+        return {"status": "UNVERIFIED", "reason": "GoPlus: nessun dato per questo token"}
     bad = []
-    for k,label in [
-        ("is_honeypot","honeypot"), ("cannot_sell","cannot_sell"),
-        ("blacklist","blacklist"), ("is_mintable","mintable"),
-        ("transfer_pausable","transfer_pausable")
+    for k, label in [
+        ("is_honeypot", "honeypot"),
+        ("cannot_sell", "cannot_sell"),
+        ("blacklist", "blacklist"),
+        ("is_mintable", "mintable"),
+        ("transfer_pausable", "transfer_pausable"),
     ]:
-        if str(data.get(k,"0")) == "1":
+        if str(data.get(k, "0")) == "1":
             bad.append(label)
-
-    for k,label in [("buy_tax","buy_tax"), ("sell_tax","sell_tax")]:
+    for k, label in [("buy_tax", "buy_tax"), ("sell_tax", "sell_tax")]:
         try:
-            if float(data.get(k,0) or 0) > 0.10:
+            if float(data.get(k, 0) or 0) > 0.10:
                 bad.append(label)
         except Exception:
             pass
-
-    result = {"status":"RISK" if bad else "PASS", "bad":bad, "raw":data}
+    result = {"status": "RISK" if bad else "PASS", "bad": bad, "raw": data}
     quality_penalty, quality_flags = security_quality(p, result)
     result["quality_penalty"] = quality_penalty
     result["quality_flags"] = quality_flags
-    # Structural concentration alone is not necessarily a honeypot, so it does
-    # not flip PASS to RISK; it does reduce the score/alert eligibility.
     return result
 
 
@@ -1099,116 +917,6 @@ def fmt(p, sec, smart_bonus_value=0, ranked=None):
     )
 
 
-GECKO = "https://api.geckoterminal.com/api/v2"
-GECKO_HEADERS = {"Accept": "application/json;version=20230203"}
-
-# GeckoTerminal uses its own network slugs.
-GECKO_NETWORKS = {
-    "ethereum":"eth", "bsc":"bsc", "solana":"solana", "base":"base",
-    "arbitrum":"arbitrum", "polygon":"polygon_pos", "avalanche":"avax",
-    "optimism":"optimism", "linea":"linea", "zksync":"zksync",
-}
-
-def gecko_get(path, params=None):
-    try:
-        r = session.get(GECKO + path, params=params, headers=GECKO_HEADERS, timeout=TIMEOUT)
-        if r.status_code != 200:
-            return None
-        return r.json()
-    except:
-        return None
-
-def historical_ohlcv(chain, pool, limit=168):
-    network = GECKO_NETWORKS.get(chain)
-    if not network:
-        return []
-    data = gecko_get(
-        f"/networks/{network}/pools/{pool}/ohlcv/hour",
-        {"aggregate":1, "limit":limit, "currency":"usd"}
-    )
-    try:
-        return data["data"]["attributes"]["ohlcv_list"]
-    except:
-        return []
-
-def historical_multiple():
-    """
-    Seed the wallet database from recent pools whose price history contains
-    a large expansion. GeckoTerminal exposes on-chain OHLCV for pools, so this
-    gives us a defensible historical winner filter without pretending we have
-    an all-time database of every dead memecoin.
-    """
-    winners = []
-    # Keep this deliberately small because the public GeckoTerminal API is
-    # rate-limited. We use the current new/trending pools as the search universe.
-    for chain in WATCH_CHAINS:
-        network = GECKO_NETWORKS.get(chain)
-        if not network:
-            continue
-
-        for endpoint in ("new_pools", "trending_pools"):
-            params = {"page":1}
-            if endpoint == "trending_pools":
-                params["duration"] = "24h"
-            data = gecko_get(f"/networks/{network}/{endpoint}", params)
-            if not data:
-                continue
-
-            for item in (data.get("data") or [])[:10]:
-                attr = item.get("attributes") or {}
-                pool = attr.get("address")
-                created = attr.get("pool_created_at")
-                if not pool:
-                    continue
-
-                candles = historical_ohlcv(chain, pool, 168)
-                if len(candles) < 6:
-                    continue
-
-                # GeckoTerminal normally returns newest-first.
-                candles = sorted(candles, key=lambda x:x[0])
-                first = float(candles[0][1] or 0)
-                if first <= 0:
-                    continue
-                peak = max(float(c[2] or 0) for c in candles)
-                current = float(candles[-1][4] or 0)
-                peak_mult = peak/first if first else 0
-                current_mult = current/first if first else 0
-
-                if peak_mult >= 5:
-                    winners.append({
-                        "chain":chain,
-                        "pool":pool,
-                        "created":created,
-                        "first":first,
-                        "peak":peak,
-                        "current":current,
-                        "peak_mult":peak_mult,
-                        "current_mult":current_mult,
-                    })
-
-    # Best historical expansions first.
-    winners.sort(key=lambda x:x["peak_mult"], reverse=True)
-    # De-duplicate pool addresses.
-    seen=set()
-    out=[]
-    for w in winners:
-        key=(w["chain"],w["pool"])
-        if key in seen: continue
-        seen.add(key)
-        out.append(w)
-        if len(out)>=20: break
-    return out
-
-
-# Known infrastructure addresses can otherwise masquerade as "smart wallets".
-# This list is intentionally conservative; unknown contracts are not automatically
-# blacklisted because that would create false negatives.
-KNOWN_INFRA_WALLETS = {
-    # Ethereum / common EVM infrastructure examples.
-    "0x0000000000000000000000000000000000000000",
-    "0x000000000000000000000000000000000000dead",
-}
 
 def looks_like_wallet_address(wallet):
     w = str(wallet or "").lower()
@@ -1227,101 +935,6 @@ def wallet_is_seed_eligible(wallet, tx_count=0):
     if tx_count and tx_count > 5000:
         return False
     return True
-
-def seed_evm_wallets_from_pool(chain, pool, token=None):
-    """
-    Historical seed for EVM. We ask Alchemy for ERC-20 transfers involving
-    the pool over its indexed history. The pool-to-user transfers of the
-    candidate token are used as early-holder candidates.
-    """
-    if not ALCHEMY_API_KEY or chain not in ALCHEMY_HOSTS:
-        return []
-
-    latest_hex = alchemy_rpc(chain, "eth_blockNumber", [])
-    if not latest_hex:
-        return []
-    latest = int(latest_hex,16)
-
-    # Use a bounded historical window (~30 days) to keep the hunter practical.
-    secs = 30*24*3600
-    block_sec = BLOCK_SECONDS.get(chain, 3)
-    start = max(0, latest-int(secs/block_sec))
-
-    contracts = [token] if token else None
-    params=[{
-        "fromBlock":hex_block(start),
-        "toBlock":"latest",
-        "fromAddress":pool,
-        "contractAddresses":contracts,
-        "category":["erc20"],
-        "withMetadata":True,
-        "excludeZeroValue":True,
-        "maxCount":"0x3e8"
-    }]
-    result=alchemy_rpc(chain,"alchemy_getAssetTransfers",params)
-    if not result:
-        return []
-
-    wallets=[]
-    seen=set()
-    for t in result.get("transfers",[]):
-        to=(t.get("to") or "").lower()
-        if not to or to in seen:
-            continue
-        if to in {
-            "0x0000000000000000000000000000000000000000",
-            "0x000000000000000000000000000000000000dead"
-        }:
-            continue
-        seen.add(to)
-        wallets.append(to)
-        if len(wallets)>=MAX_WALLETS_PER_TOKEN:
-            break
-    return wallets
-
-def seed_historical_wallets(winners):
-    """
-    Historical wallet bootstrap is intentionally disabled by default.
-
-    The old implementation assigned a win to every address receiving tokens from
-    a historical pool. That contaminated the reputation database with late buyers,
-    routers, MEV and deployers. Historical winners are now used by the outcome
-    tracker/analytics layer, not as automatic smart-wallet wins.
-
-    Set ENABLE_HISTORICAL_WALLET_SEED=true only if a future, stricter indexer-backed
-    seed implementation is added.
-    """
-    if str(_CFG.get("ENABLE_HISTORICAL_WALLET_SEED", "")).lower() != "true":
-        return load_wallets(), 0
-
-    # Deliberately refuse the old unsafe seed path.
-    print("[Smart Wallet] Historical seed disabilitato: serve un indexer che identifichi "
-          "l'acquisto iniziale, non semplici transfer dal pool.")
-    return load_wallets(), 0
-
-
-def wallet_report(wallets):
-    ranked=[]
-    for key,rec in wallets.items():
-        calls=int(rec.get("calls",0)); wins=int(rec.get("wins",0)); losses=int(rec.get("losses",0))
-        resolved=wins+losses
-        if calls<2 or wins<2: continue
-        wr=wins/resolved if resolved else 0
-        early=int(rec.get("early_entries",0)); late=int(rec.get("late_entries",0))
-        early_rate=early/max(1,early+late)
-        mults=rec.get("peak_mults",[])
-        avg=sum(mults)/len(mults) if mults else 0
-        score=min(100,round(wr*55 + min(early_rate,1)*25 + min(avg,10)*2 + min(wins,10)*2))
-        ranked.append((score,rec.get("chain"),rec.get("wallet"),calls,wins,losses,wr,early_rate,avg))
-    ranked.sort(reverse=True)
-    return ranked[:30]
-
-def wallet_stats(wallets):
-    calls=sum(int(r.get("calls",0)) for r in wallets.values())
-    wins=sum(int(r.get("wins",0)) for r in wallets.values())
-    pending=sum(len(r.get("pending",[])) for r in wallets.values())
-    return calls,wins,pending
-
 
 def _load_json_state(path, default):
     try:
@@ -1734,13 +1347,7 @@ def build_telegram_alert(p, sec, smart_bonus_value, ranked, alert_level="INTERES
         "",
         f"🛡️ SECURITY: {security_text}",
         "",
-        "🎯 EXIT STRATEGY",
-        "  TP1: +50%  → vendi 20%",
-        "  TP2: +100% → vendi 30%",
-        "  TP3: +200% → vendi 25%",
-        "  TP4: +400% → vendi 15%",
-        "  SL:  -20%  → chiudi il residuo",
-        "  RUNNER: 10% → lascia correre",
+        "🎯 EXIT STRATEGY: DA CONFIGURARE",
         "",
         f"📜 CONTRACT: {b.get('address')}",
         f"🔗 DEXSCREENER: {p.get('url')}",
@@ -1749,61 +1356,15 @@ def build_telegram_alert(p, sec, smart_bonus_value, ranked, alert_level="INTERES
     return "\n".join(lines)
 
 
-def print_trade_plan():
-    # Piano già pronto da replicare nella sezione Exit Strategy di Terminal.
-    # TP: percentuale di profitto + percentuale Amount.
-    # SL: -20% con Amount 100% per chiudere il residuo della posizione.
-    print(c("\n  TERMINAL — EXIT STRATEGY", CYAN, True))
-    print(c("  ├─ TP1         +50%   → Amount 20%", GREEN, True))
-    print(c("  ├─ TP2        +100%   → Amount 30%", GREEN))
-    print(c("  ├─ TP3        +200%   → Amount 25%", GREEN))
-    print(c("  ├─ TP4        +400%   → Amount 15%", GREEN))
-    print(c("  ├─ SL          -20%   → Amount 100% (residuo)", RED, True))
-    print(c("  └─ RUNNER       10%   → lasciato correre", YELLOW))
-    print(c("  [Terminal] Exit Strategy → Add → 4 TP + 1 SL", WHITE))
-
 def main():
     enable_ansi()
     print(c("═"*80, CYAN))
     print(c("  MEMECOIN SCANNER V11", CYAN, True))
-    print(c("  SMART WALLET  +  EARLY SCORE  +  LEARNING  +  GOPLUS  +  TERMINAL EXIT", WHITE))
+    print(c("  SOLANA  +  SMART WALLET  +  EARLY SCORE  +  LEARNING  +  GOPLUS  +  JUPITER", WHITE))
     print(c("═"*80, CYAN))
 
-    print(c("\n[1/3] Cerco pool recenti e storico OHLCV...",BLUE,True))
-    try:
-        winners = historical_multiple()
-    except Exception as e:
-        winners=[]
-        print("Historical hunter error:",e)
+    print(c("\n[1/2] Scansione mercato Solana corrente...", BLUE, True))
 
-    if winners:
-        print(f"Trovati {len(winners)} pool con espansione storica >=5x.")
-        print("Esempi:")
-        for w in winners[:5]:
-            print(f"  {w['chain']} | {w['pool'][:12]}... | peak {w['peak_mult']:.1f}x | current {w['current_mult']:.1f}x")
-        print(c("\n[2/3] Estraggo wallet dai vincitori storici...",BLUE,True))
-        try:
-            wallets, seeded = seed_historical_wallets(winners)
-            print(f"Seed wallet aggiornati: {seeded}")
-        except Exception as e:
-            wallets=load_wallets()
-            print("Wallet hunter error:",e)
-    else:
-        wallets=load_wallets()
-        print("Nessun vincitore storico disponibile in questa scansione.")
-        print("Nota: questo non blocca la scansione; il market scanner continua normalmente.")
-
-    report=wallet_report(wallets)
-    total_calls,total_wins,total_pending=wallet_stats(wallets)
-    print(c(f"\nSMART-WALLET ENGINE  •  {len(wallets)} wallet | {total_calls} call | {total_pending} pending | {total_wins} win risolte",MAGENTA,True))
-    print(c("TOP SMART-WALLET DATABASE",MAGENTA,True))
-    if report:
-        for i,(score,chain,w,calls,wins,losses,wr,early_rate,avg) in enumerate(report[:10],1):
-            print(f"#{i} {chain} {w[:10]}... score {score}/100 | {wins}W/{losses}L | WR {wr*100:.0f}% | early {early_rate*100:.0f}% | avg peak {avg:.1f}x")
-    else:
-        print("Database in apprendimento: servono più chiamate risolte per costruire reputazione.")
-
-    print(c("\n[3/3] Scansione mercato corrente...",BLUE,True))
     rows=discover()
     if not rows:
         print("Nessun candidato.")
@@ -1863,8 +1424,6 @@ def main():
         print(fmt(p,sec,p["_smart_bonus"],p["_smart_ranked"]))
         if sec.get("quality_flags"):
             print("  Structural risk:", " | ".join(sec["quality_flags"]))
-        if p["_final_score"] >= 60 and sec["status"] == "PASS" and quality_penalty < 12:
-            print_trade_plan()
 
     # TELEGRAM ALERT ENGINE
     # Tre livelli. La Security viene riutilizzata da p["_security_result"]
@@ -1993,7 +1552,6 @@ def main():
             print(c("\n" + "═"*80, GREEN, True))
             print(c(f"  {title}", GREEN, True))
             print(fmt(p, sec, p["_smart_bonus"], p["_smart_ranked"]))
-            print_trade_plan()
             print(c("═"*80, GREEN, True))
 
             alert_text = build_telegram_alert(
