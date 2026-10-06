@@ -91,8 +91,6 @@ AUTO_TRADE_ENABLED = os.getenv("AUTO_TRADE_ENABLED", "true").strip().lower() in 
 SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY", "").strip()
 SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com").strip()
 POSITIONS_FILE = os.path.join(SCRIPT_DIR, "positions.json")
-MIN_ENTRY_EUR = 30.0
-MAX_ENTRY_EUR = 100.0
 WALLET_BUDGET_FRACTION = 0.25
 SOL_RESERVE = 0.03
 MC_BUDGET_FRACTION = 0.0025
@@ -1218,10 +1216,20 @@ def _save_positions(data):
     try:
         tmp = POSITIONS_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+            json.dump(tmp and data, f, indent=2)
         os.replace(tmp, POSITIONS_FILE)
     except Exception as e:
         print(f"[TRADING] save positions error: {e}")
+
+def _b58encode(raw):
+    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    n = int.from_bytes(bytes(raw), "big")
+    out = ""
+    while n:
+        n, rem = divmod(n, 58)
+        out = alphabet[rem] + out
+    pad = len(bytes(raw)) - len(bytes(raw).lstrip(b"\\x00"))
+    return "1" * pad + (out or "")
 
 def _solana_keypair():
     if not SOLANA_PRIVATE_KEY:
@@ -1252,21 +1260,12 @@ def solana_wallet_sol(pubkey):
     result = solana_rpc("getBalance",[str(pubkey),{"commitment":"confirmed"}])
     return num((result or {}).get("value")) / 1_000_000_000
 
-def solana_token_balance(pubkey,mint):
-    result = solana_rpc("getTokenAccountsByOwner",[str(pubkey),{"mint":mint},{"encoding":"jsonParsed","commitment":"confirmed"}])
-    total, decimals = 0, 0
-    for item in (result or {}).get("value",[]):
-        info = (((item.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {}
-        ta = info.get("tokenAmount") or {}
-        if ta.get("amount") is not None:
-            total += int(ta["amount"])
-            decimals = int(ta.get("decimals") or 0)
-    return total, decimals
-
-def jupiter_headers():
+def jupiter_headers(jwt=None):
     h={"Content-Type":"application/json"}
     if JUPITER_API_KEY:
         h["x-api-key"]=JUPITER_API_KEY
+    if jwt:
+        h["Authorization"]=f"Bearer {jwt}"
     return h
 
 def jupiter_quote(input_mint,output_mint,amount_atomic,slippage_bps):
@@ -1301,6 +1300,97 @@ def jupiter_execute_swap(quote_response,wallet):
         raise RuntimeError("Solana RPC non ha restituito la signature")
     return result
 
+def _trigger_request(method,path,jwt,payload=None):
+    url=f"{JUPITER_API_BASE}/trigger/v2{path}"
+    if method=="GET":
+        r=session.get(url,headers=jupiter_headers(jwt),timeout=TIMEOUT)
+    else:
+        r=session.request(method,url,json=payload,headers=jupiter_headers(jwt),timeout=TIMEOUT)
+    r.raise_for_status()
+    data=r.json()
+    if isinstance(data,dict) and data.get("error"):
+        raise RuntimeError(f"Jupiter Trigger: {data['error']}")
+    return data
+
+def trigger_jwt(wallet):
+    pubkey=str(wallet.pubkey())
+    challenge=_trigger_request("POST","/auth/challenge",None,{"walletPubkey":pubkey,"type":"message"})
+    message=challenge.get("challenge")
+    if not message:
+        raise RuntimeError(f"Jupiter Trigger challenge mancante: {challenge}")
+    signature=wallet.sign_message(message.encode("utf-8"))
+    verified=_trigger_request("POST","/auth/verify",None,{"type":"message","walletPubkey":pubkey,"signature":_b58encode(signature)})
+    token=verified.get("token")
+    if not token:
+        raise RuntimeError(f"Jupiter Trigger JWT mancante: {verified}")
+    return token
+
+def trigger_sign_transaction(wallet,tx_base64):
+    from solders.transaction import VersionedTransaction
+    tx=VersionedTransaction.from_bytes(base64.b64decode(tx_base64))
+    tx.sign([wallet])
+    return base64.b64encode(bytes(tx)).decode("ascii")
+
+def trigger_deposit(wallet,jwt,input_mint,output_mint,amount_atomic,subtype):
+    try:
+        _trigger_request("GET","/vault/register",jwt)
+    except Exception:
+        pass
+    deposit=_trigger_request(
+        "POST","/deposit/craft",jwt,
+        {
+            "inputMint":input_mint,
+            "outputMint":output_mint,
+            "userAddress":str(wallet.pubkey()),
+            "amount":str(int(amount_atomic)),
+            "orderType":"price",
+            "orderSubType":subtype,
+        }
+    )
+    signed=trigger_sign_transaction(wallet,deposit["transaction"])
+    return deposit["requestId"],signed
+
+def trigger_create_oco(wallet,jwt,input_mint,output_mint,amount_atomic,entry_price,tp_price,sl_price):
+    request_id,signed=trigger_deposit(wallet,jwt,input_mint,output_mint,amount_atomic,"oco")
+    payload={
+        "orderType":"oco",
+        "depositRequestId":request_id,
+        "depositSignedTx":signed,
+        "userPubkey":str(wallet.pubkey()),
+        "inputMint":input_mint,
+        "inputAmount":str(int(amount_atomic)),
+        "outputMint":output_mint,
+        "triggerMint":input_mint,
+        "tpPriceUsd":float(tp_price),
+        "slPriceUsd":float(sl_price),
+        "tpSlippageBps":500,
+        "slSlippageBps":500,
+        "expiresAt":int(time.time()*1000)+30*24*60*60*1000,
+    }
+    return _trigger_request("POST","/orders/price",jwt,payload)
+
+def trigger_create_trailing(wallet,jwt,input_mint,output_mint,amount_atomic):
+    request_id,signed=trigger_deposit(wallet,jwt,input_mint,output_mint,amount_atomic,"single")
+    payload={
+        "orderType":"single",
+        "depositRequestId":request_id,
+        "depositSignedTx":signed,
+        "userPubkey":str(wallet.pubkey()),
+        "inputMint":input_mint,
+        "inputAmount":str(int(amount_atomic)),
+        "outputMint":output_mint,
+        "triggerMint":input_mint,
+        "triggerCondition":"below",
+        "trailingBps":int(TRAILING_STOP_PCT*10000),
+        "slippageBps":500,
+        "expiresAt":int(time.time()*1000)+30*24*60*60*1000,
+    }
+    return _trigger_request("POST","/orders/price",jwt,payload)
+
+def trigger_update_oco_sl(jwt,order_id,sl_price):
+    payload={"orderType":"oco","slPriceUsd":float(sl_price),"slSlippageBps":500}
+    return _trigger_request("PATCH",f"/orders/price/{order_id}",jwt,payload)
+
 def _slippage_for_pool(liq_usd):
     liq=num(liq_usd)
     if liq>=500_000: return 100
@@ -1315,132 +1405,208 @@ def _sol_usd_from_pair(p):
 
 def calculate_entry_budget(p,wallet_sol,sol_usd):
     if wallet_sol<=SOL_RESERVE or sol_usd<=0:
-        return {"eur":0.0,"usd":0.0,"sol":0.0,"reason":"budget insufficiente"}
-    available=max(0.0,wallet_sol-SOL_RESERVE)
-    wallet_cap=available*WALLET_BUDGET_FRACTION*sol_usd
+        return {"usd":0.0,"sol":0.0,"reason":"budget SOL insufficiente"}
+
+    available_sol=max(0.0,wallet_sol-SOL_RESERVE)
+    wallet_cap_usd=available_sol*WALLET_BUDGET_FRACTION*sol_usd
     mc=num(p.get("marketCap") or p.get("fdv"))
     liq=num((p.get("liquidity") or {}).get("usd"))
-    impact_cap=estimate_max_position(p).get("usd",0.0)
+    impact_cap_usd=estimate_max_position(p).get("usd",0.0)
+
+    # ALL sizing constraints are percentages. No fixed EUR ceiling/floor.
     caps=[
-        wallet_cap,
-        MAX_ENTRY_EUR/max(get_usd_to_eur_rate(),1e-9),
-        mc*MC_BUDGET_FRACTION if mc>0 else 0,
-        liq*LIQ_BUDGET_FRACTION if liq>0 else 0,
-        impact_cap
+        wallet_cap_usd,
+        mc*MC_BUDGET_FRACTION if mc>0 else 0.0,
+        liq*LIQ_BUDGET_FRACTION if liq>0 else 0.0,
+        impact_cap_usd,
     ]
     positive=[x for x in caps if x>0]
     usd=min(positive) if positive else 0.0
-    eur=usd*get_usd_to_eur_rate()
-    if eur<MIN_ENTRY_EUR:
-        return {"eur":eur,"usd":usd,"sol":usd/sol_usd,"reason":f"sotto minimo EUR {MIN_ENTRY_EUR:.0f}"}
-    return {"eur":eur,"usd":usd,"sol":usd/sol_usd,"reason":"OK","wallet_cap_usd":wallet_cap,"mc_cap_usd":mc*MC_BUDGET_FRACTION,"liq_cap_usd":liq*LIQ_BUDGET_FRACTION,"impact_cap_usd":impact_cap}
+
+    # Jupiter Trigger V2 requires each price order to be >= $10.
+    # Since the runner is 10%, the whole position must therefore be >= $100
+    # for all four exit orders to be created. This is a Jupiter constraint,
+    # not a user-defined € limit.
+    if usd*RUNNER_FRACTION < 10.0:
+        return {"usd":usd,"sol":usd/sol_usd,"reason":"position too small for Jupiter Trigger: 10% runner < $10"}
+
+    return {
+        "usd":usd,
+        "sol":usd/sol_usd,
+        "reason":"OK",
+        "wallet_cap_usd":wallet_cap_usd,
+        "mc_cap_usd":mc*MC_BUDGET_FRACTION,
+        "liq_cap_usd":liq*LIQ_BUDGET_FRACTION,
+        "impact_cap_usd":impact_cap_usd,
+    }
 
 def execute_entry(p):
-    if not AUTO_TRADE_ENABLED: return None
-    wallet=_solana_keypair(); pubkey=wallet.pubkey()
+    if not AUTO_TRADE_ENABLED:
+        return None
+
+    wallet=_solana_keypair()
+    pubkey=wallet.pubkey()
     wallet_sol=solana_wallet_sol(pubkey)
     sol_usd=_sol_usd_from_pair(p)
     sizing=calculate_entry_budget(p,wallet_sol,sol_usd)
+
     if sizing.get("reason")!="OK":
         print(f"[TRADING] NO BUY {p.get('baseToken',{}).get('symbol','?')}: {sizing.get('reason')}")
         return None
+
     mint=(p.get("baseToken") or {}).get("address")
-    if not mint: return None
+    if not mint:
+        return None
+
     lamports=int(sizing["sol"]*1_000_000_000)
     quote=jupiter_quote(SOL_MINT,mint,lamports,_slippage_for_pool((p.get("liquidity") or {}).get("usd")))
     impact=num(quote.get("priceImpactPct"))
     if impact>MAX_EXECUTION_PRICE_IMPACT:
         print(f"[TRADING] NO BUY: Jupiter impact {impact*100:.2f}%")
         return None
+
     out_amount=int(quote.get("outAmount") or 0)
-    if out_amount<=0: return None
-    before_atomic,before_decimals=solana_token_balance(pubkey,mint)
+    if out_amount<=0:
+        return None
+
+    before_sol=solana_wallet_sol(pubkey)
     signature=jupiter_execute_swap(quote,wallet)
     time.sleep(2)
-    after_atomic,decimals=solana_token_balance(pubkey,mint)
-    received_atomic=max(0,after_atomic-before_atomic)
-    if received_atomic<=0: received_atomic=out_amount
-    received=received_atomic/(10**decimals)
-    entry_sol=lamports/1_000_000_000
-    entry_usd=entry_sol*sol_usd
-    entry_price=entry_usd/received if received>0 else num(p.get("priceUsd"))
-    pos={"mint":mint,"symbol":(p.get("baseToken") or {}).get("symbol","?"),"name":(p.get("baseToken") or {}).get("name","?"),"pair":p.get("pairAddress"),"entry_ts":time.time(),"entry_signature":signature,"entry_sol":entry_sol,"entry_usd":entry_usd,"entry_eur":entry_usd*get_usd_to_eur_rate(),"entry_price_usd":entry_price,"token_decimals":decimals,"initial_tokens":received,"remaining_tokens":received,"highest_price_usd":entry_price,"tp1_done":False,"tp2_done":False,"tp3_done":False,"closed":False}
-    positions=_load_positions(); positions[mint]=pos; _save_positions(positions)
-    print(f"[TRADING] BUY {pos['symbol']} | EUR {pos['entry_eur']:.2f} | MC {num(p.get('marketCap')):,.0f} | LIQ {num((p.get('liquidity') or {}).get('usd')):,.0f} | tx {signature}")
-    return pos
+    after_sol=solana_wallet_sol(pubkey)
+    spent_lamports=max(0,int((before_sol-after_sol)*1_000_000_000))
+    actual_entry_sol=spent_lamports/1_000_000_000 if spent_lamports>0 else lamports
+    actual_entry_usd=actual_entry_sol*sol_usd
+    entry_price=num(p.get("priceUsd"))
+    if entry_price<=0:
+        raise RuntimeError("Prezzo token non disponibile per creare gli ordini Trigger")
 
-def execute_exit(position,fraction,reason,current_price_usd):
-    wallet=_solana_keypair(); pubkey=wallet.pubkey()
-    atomic,decimals=solana_token_balance(pubkey,position["mint"])
-    if atomic<=0: return False
-    amount=int(atomic*min(1.0,max(0.0,fraction)))
-    if amount<=0: return False
-    quote=jupiter_quote(position["mint"],SOL_MINT,amount,500)
-    impact=num(quote.get("priceImpactPct"))
-    if impact>MAX_EXECUTION_PRICE_IMPACT:
-        print(f"[TRADING] EXIT BLOCKED {position['symbol']}: impact {impact*100:.2f}%")
-        return False
-    signature=jupiter_execute_swap(quote,wallet)
-    sold=amount/(10**decimals)
-    position["remaining_tokens"]=max(0.0,num(position.get("remaining_tokens"))-sold)
-    position.setdefault("exits",[]).append({"ts":time.time(),"reason":reason,"price_usd":current_price_usd,"fraction_of_current":fraction,"sold_tokens":sold,"signature":signature})
-    if position["remaining_tokens"]<=0:
-        position["closed"]=True; position["closed_ts"]=time.time()
-    print(f"[TRADING] SELL {position['symbol']} | {reason} | {fraction*100:.0f}% current | tx {signature}")
-    return True
+    # Authenticate once, then immediately park the exit inventory in Jupiter Trigger.
+    jwt=trigger_jwt(wallet)
+
+    # Token balance delta gives the exact amount received by this BUY.
+    from_balance=solana_rpc("getTokenAccountsByOwner",[str(pubkey),{"mint":mint},{"encoding":"jsonParsed","commitment":"confirmed"}])
+    received_atomic=0
+    decimals=0
+    for item in (from_balance or {}).get("value",[]):
+        ta=((((item.get("account") or {}).get("data") or {}).get("parsed") or {}).get("info") or {}).get("tokenAmount") or {}
+        if ta.get("amount") is not None:
+            received_atomic+=int(ta["amount"])
+            decimals=int(ta.get("decimals") or 0)
+
+    if received_atomic<=0:
+        raise RuntimeError("BUY eseguito ma saldo token non rilevato: NON creo ordini di uscita")
+
+    # Exact 30/30/30/10 allocation. The last 10% is the Jupiter-native trailing runner.
+    allocations=[("tp1",0.30,1.30),("tp2",0.30,1.60),("tp3",0.30,1.90)]
+    orders={}
+    remaining=received_atomic
+
+    for label,fraction,multiple in allocations:
+        amount=int(received_atomic*fraction)
+        remaining-=amount
+        if amount<=0: raise RuntimeError(f"amount {label} non valido")
+        orders[label]=trigger_create_oco(
+            wallet,jwt,mint,SOL_MINT,amount,entry_price,entry_price*multiple,entry_price*(1-TRAILING_STOP_PCT)
+        )
+
+    runner_amount=remaining
+    if runner_amount<=0:
+        raise RuntimeError("runner 10% non valido")
+    orders["runner"]=trigger_create_trailing(wallet,jwt,mint,SOL_MINT,runner_amount)
+
+    position={
+        "mint":mint,
+        "symbol":(p.get("baseToken") or {}).get("symbol","?"),
+        "name":(p.get("baseToken") or {}).get("name","?"),
+        "entry_ts":time.time(),
+        "entry_signature":signature,
+        "entry_sol":actual_entry_sol,
+        "entry_usd":actual_entry_usd,
+        "entry_price_usd":entry_price,
+        "initial_tokens_atomic":received_atomic,
+        "token_decimals":decimals,
+        "orders":{k:v.get("id") for k,v in orders.items()},
+        "highest_price_usd":entry_price,
+    }
+    positions=_load_positions()
+    positions[mint]=position
+    _save_positions(positions)
+
+    print(f"[TRADING] BUY {position['symbol']} | Jupiter TP/SL orders created | tx {signature}")
+    return position
 
 def manage_open_positions():
-    if not AUTO_TRADE_ENABLED or not SOLANA_PRIVATE_KEY: return
+    if not AUTO_TRADE_ENABLED or not SOLANA_PRIVATE_KEY:
+        return
+
     positions=_load_positions()
-    if not positions: return
-    changed=False
+    if not positions:
+        return
+
     for mint,position in list(positions.items()):
-        if position.get("closed"): continue
         try:
             data=get_json(f"{BASE}/latest/dex/tokens/{mint}")
             pairs=data.get("pairs") or []
-            if not pairs: continue
+            if not pairs:
+                continue
             pair=max(pairs,key=lambda x:num((x.get("liquidity") or {}).get("usd")))
-            price=num(pair.get("priceUsd")); entry=num(position.get("entry_price_usd"))
-            if price<=0 or entry<=0: continue
+            price=num(pair.get("priceUsd"))
+            if price<=0:
+                continue
+
             high=max(num(position.get("highest_price_usd")),price)
+            if high<=0:
+                continue
             position["highest_price_usd"]=high
-            initial=max(num(position.get("initial_tokens")),0.0)
-            remaining=max(num(position.get("remaining_tokens")),0.0)
-            for key,target,original_fraction in [("tp1_done",1.30,0.30),("tp2_done",1.60,0.30),("tp3_done",1.90,0.30)]:
-                if position.get(key) or price<entry*target: continue
-                if remaining<=0 or initial<=0:
-                    position[key]=True; continue
-                desired=initial*original_fraction
-                current_fraction=min(1.0,desired/remaining)
-                if execute_exit(position,current_fraction,f"TP {target:.2f}x",price):
-                    position[key]=True; remaining=num(position.get("remaining_tokens")); changed=True
-            if num(position.get("remaining_tokens"))>0 and high>entry and price<=high*(1.0-TRAILING_STOP_PCT):
-                if execute_exit(position,1.0,"TRAILING STOP -30%",price):
-                    position["closed"]=True; position["closed_ts"]=time.time(); changed=True
-            position["last_price_usd"]=price; position["last_check_ts"]=time.time()
+
+            wallet=_solana_keypair()
+            jwt=trigger_jwt(wallet)
+            orders=_trigger_request("GET","/orders/history?state=active&mint="+mint,jwt).get("orders",[])
+
+            # IMPORTANT: this function never sells. It only changes Jupiter's
+            # existing OCO stop prices. Jupiter remains the execution engine.
+            new_sl=high*(1.0-TRAILING_STOP_PCT)
+            for order in orders:
+                if order.get("orderType")!="oco":
+                    continue
+                current_sl=num(order.get("slPriceUsd"))
+                if new_sl>current_sl*1.001:
+                    trigger_update_oco_sl(jwt,order["id"],new_sl)
+
+            position["last_jupiter_update_ts"]=time.time()
         except Exception as e:
-            print(f"[TRADING] monitor error {position.get('symbol','?')}: {e}")
-    if changed or positions: _save_positions(positions)
+            print(f"[TRADING] Jupiter order-management error {position.get('symbol','?')}: {e}")
+
+    _save_positions(positions)
 
 def auto_trade_best_candidate(rows):
-    if not AUTO_TRADE_ENABLED or not SOLANA_PRIVATE_KEY: return
+    if not AUTO_TRADE_ENABLED or not SOLANA_PRIVATE_KEY:
+        return
+
     positions=_load_positions()
     if any(not p.get("closed") for p in positions.values()):
         print("[TRADING] posizione aperta: nessun nuovo BUY")
         return
+
     eligible=[]
     for p in rows:
         sec=p.get("_security_result") or {}
-        if sec.get("status")!="PASS": continue
-        if num(sec.get("quality_penalty"))>=12: continue
-        if p.get("_final_score",0)<60: continue
-        if num((p.get("priceChange") or {}).get("h1"))>ALERT_MAX_P1: continue
-        if num((p.get("priceChange") or {}).get("h24"))>ALERT_MAX_P24: continue
+        if sec.get("status")!="PASS":
+            continue
+        if num(sec.get("quality_penalty"))>=12:
+            continue
+        if p.get("_final_score",0)<60:
+            continue
+        if num((p.get("priceChange") or {}).get("h1"))>ALERT_MAX_P1:
+            continue
+        if num((p.get("priceChange") or {}).get("h24"))>ALERT_MAX_P24:
+            continue
         eligible.append(p)
+
     if not eligible:
         print("[TRADING] Nessun candidato idoneo al BUY automatico.")
         return
+
     execute_entry(max(eligible,key=lambda x:(x.get("_final_score",0),x.get("_burst",0))))
 
 
