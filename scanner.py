@@ -1354,9 +1354,11 @@ def execute_entry(p):
         return None
     out_amount=int(quote.get("outAmount") or 0)
     if out_amount<=0: return None
+    before_atomic,before_decimals=solana_token_balance(pubkey,mint)
     signature=jupiter_execute_swap(quote,wallet)
     time.sleep(2)
-    received_atomic,decimals=solana_token_balance(pubkey,mint)
+    after_atomic,decimals=solana_token_balance(pubkey,mint)
+    received_atomic=max(0,after_atomic-before_atomic)
     if received_atomic<=0: received_atomic=out_amount
     received=received_atomic/(10**decimals)
     entry_sol=lamports/1_000_000_000
