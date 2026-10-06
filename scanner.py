@@ -283,8 +283,13 @@ def raw_score(p, previous=None):
     elif v1 >= 25_000: s += 7
     elif v1 >= 10_000: s += 3
 
-    # 4) VOLUME BURST — new in V8.
-    if burst >= 10: s += 15
+    # 4) VOLUME BURST.
+    # A burst is useful, but extreme values can also be caused by bots,
+    # wash-trading or a thin pool. Do not reward increasingly extreme bursts
+    # indefinitely.
+    if burst >= 20: s -= 10
+    elif burst >= 15: s -= 5
+    elif burst >= 10: s += 15
     elif burst >= 6: s += 12
     elif burst >= 3: s += 9
     elif burst >= 2: s += 6
@@ -292,10 +297,12 @@ def raw_score(p, previous=None):
 
     # Extremely high volume relative to liquidity is not automatically bullish:
     # it can be bot/wash-trading activity or a dangerously thin pool.
+    # Stronger penalties prevent thin pools from being promoted by volume alone.
     liq_ratio = (v1 / liq) if liq > 0 else 0
-    if liq_ratio >= 50: s -= 15
-    elif liq_ratio >= 25: s -= 10
-    elif liq_ratio >= 12: s -= 5
+    if liq_ratio >= 40: s -= 40
+    elif liq_ratio >= 25: s -= 30
+    elif liq_ratio >= 15: s -= 20
+    elif liq_ratio >= 10: s -= 10
 
     # 5) BUY PRESSURE
     total = buys+sells
@@ -1509,11 +1516,28 @@ def main():
             print("  → NO ALERT: token troppo esteso")
             continue
 
+        # Evitiamo anche setup già in forte deterioramento.
+        # Un burst enorme non deve compensare un crollo già in corso.
+        if p1 <= -30 or p24 <= -50:
+            print("  → NO ALERT: momentum fortemente negativo")
+            continue
+
+        # Conferma indipendente per i livelli alti:
+        # 1) accelerazione osservata su più scansioni, oppure
+        # 2) smart-wallet evidence qualificata, oppure
+        # 3) struttura volume/liquidità non eccessivamente tirata.
+        strong_confirmation = (
+            (has_accel and accel >= 1.15)
+            or p["_smart_bonus"] >= 4
+            or p.get("_liq_ratio", 0) <= 10
+        )
+
         # 🧠 SMART: livello più alto.
         if (
             p["_final_score"] >= 75
             and (burst >= 2.0 or (has_accel and accel >= 1.15))
             and p["_smart_bonus"] >= 4
+            and strong_confirmation
         ):
             print("  → 🧠 SMART")
             smart.append((p, sec, "SMART"))
@@ -1523,6 +1547,7 @@ def main():
         if (
             p["_final_score"] >= 75
             and (burst >= 2.0 or (has_accel and accel >= 1.15))
+            and strong_confirmation
         ):
             print("  → 🔥 STRONG")
             strong.append((p, sec, "STRONG"))
