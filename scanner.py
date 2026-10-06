@@ -1642,194 +1642,58 @@ def auto_trade_best_candidate(rows):
             continue
         if num(sec.get("quality_penalty"))>=12:
             continue
-        if p.get("_final_score",0)<60:
+
+        score=num(p.get("_final_score"))
+        burst=num(p.get("_burst"))
+        accel=num(p.get("_accel"))
+        has_accel=bool(p.get("_has_accel_history"))
+        p1=num((p.get("priceChange") or {}).get("h1"))
+        p24=num((p.get("priceChange") or {}).get("h24"))
+        liq=num((p.get("liquidity") or {}).get("usd"))
+        mc=num(p.get("marketCap") or p.get("fdv"))
+
+        # Automatic BUY requires an actual acceleration signal; score alone
+        # is never sufficient. This is deliberately tighter than Telegram.
+        acceleration_ok=(has_accel and accel>=1.15) or burst>=2.0
+        if not acceleration_ok:
             continue
-        if num((p.get("priceChange") or {}).get("h1"))>ALERT_MAX_P1:
+        if score<75:
             continue
-        if num((p.get("priceChange") or {}).get("h24"))>ALERT_MAX_P24:
+        if p1>ALERT_MAX_P1 or p24>ALERT_MAX_P24:
             continue
+        if p1<=-30 or p24<=-50:
+            continue
+        if liq<10_000 or mc<MIN_MC or mc>MAX_MC:
+            continue
+
+        tx=(p.get("txns") or {}).get("h1") or {}
+        buys=num(tx.get("buys")); sells=num(tx.get("sells"))
+        total=buys+sells
+        buy_pressure=buys/total if total else 0
+        if buy_pressure<0.55:
+            continue
+
         eligible.append(p)
 
     if not eligible:
-        print("[TRADING] Nessun candidato idoneo al BUY automatico.")
+        print("[TRADING] Nessun candidato con accelerazione sufficiente per BUY automatico.")
         return
 
-    execute_entry(max(eligible,key=lambda x:(x.get("_final_score",0),x.get("_burst",0))))
-
-
-def _load_telegram_alerts():
-    try:
-        with open(TELEGRAM_ALERT_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def _save_telegram_alerts(data):
-    try:
-        tmp = TELEGRAM_ALERT_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp, TELEGRAM_ALERT_FILE)
-    except Exception:
-        pass
-
-
-def telegram_send(text, pair_address=None):
-    """Send a Telegram alert and print the exact Telegram error if it fails."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print(
-            "[Telegram DEBUG] CONFIG MANCANTE | "
-            f"token_present={bool(TELEGRAM_BOT_TOKEN)} | "
-            f"chat_id_present={bool(TELEGRAM_CHAT_ID)}"
+    best=max(
+        eligible,
+        key=lambda x: (
+            num(x.get("_final_score")),
+            num(x.get("_accel")),
+            num(x.get("_burst")),
+            num(x.get("_smart_bonus"))
         )
-        return False
-
-    alerts = _load_telegram_alerts()
-    now = time.time()
-
-    if pair_address:
-        last = num(alerts.get(pair_address))
-        if last and now - last < 3600:
-            print(
-                f"[Telegram DEBUG] DUPLICATO BLOCCATO | "
-                f"pair={pair_address} | age_min={(now-last)/60:.1f}"
-            )
-            return False
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "disable_web_page_preview": False,
-    }
-
-    try:
-        print(
-            f"[Telegram DEBUG] POST sendMessage | "
-            f"chat_id={TELEGRAM_CHAT_ID!r} | text_len={len(text)}"
-        )
-
-        r = session.post(url, json=payload, timeout=TIMEOUT)
-
-        print(f"[Telegram DEBUG] HTTP {r.status_code}")
-        print(f"[Telegram DEBUG] Response: {r.text[:1000]}")
-
-        if r.status_code != 200:
-            return False
-
-        try:
-            body = r.json()
-        except Exception:
-            print("[Telegram DEBUG] Risposta non JSON.")
-            return False
-
-        if not body.get("ok"):
-            print(f"[Telegram DEBUG] Telegram API ok=false | body={body}")
-            return False
-
-        if pair_address:
-            alerts[pair_address] = now
-            cutoff = now - 7 * 86400
-            alerts = {
-                k: v for k, v in alerts.items()
-                if num(v) >= cutoff
-            }
-            _save_telegram_alerts(alerts)
-
-        print("[Telegram] Alert inviato.")
-        return True
-
-    except Exception as e:
-        print(f"[Telegram DEBUG] Exception: {type(e).__name__}: {e}")
-        return False
-
-def build_telegram_alert(p, sec, smart_bonus_value, ranked, alert_level="INTERESTING"):
-    b = p.get("baseToken") or {}
-    level_titles = {
-        "INTERESTING": "🟢 INTERESTING — DA VALUTARE",
-        "STRONG": "🔥 STRONG — SETUP INTERESSANTE",
-        "SMART": "🧠 SMART WALLET — SEGNALE FORTE",
-    }
-
-    liq = num((p.get("liquidity") or {}).get("usd"))
-    mc = num(p.get("marketCap") or p.get("fdv"))
-    v1 = num((p.get("volume") or {}).get("h1"))
-    v24 = num((p.get("volume") or {}).get("h24"))
-    tx = (p.get("txns") or {}).get("h1") or {}
-    buys = int(num(tx.get("buys")))
-    sells = int(num(tx.get("sells")))
-    total_tx = buys + sells
-    bp = 100 * buys / total_tx if total_tx else 0
-    pc = p.get("priceChange") or {}
-
-    accel = f"{p.get('_accel', 0):.1f}x" if p.get("_has_accel_history") else "N/D"
-    burst = num(p.get("_burst", 0))
-    score = p.get("_final_score", 0)
-    base_score = p.get("_score", 0)
-
-    max_position_text, _ = format_position_size(p)
-    suggested_text, suggested = format_suggested_position(p)
-
-    sec_status = sec.get("status", "UNKNOWN")
-    if sec_status == "PASS":
-        security_text = "✅ PASS"
-    elif sec_status == "RISK":
-        security_text = "🔴 RISK"
-    else:
-        security_text = f"⚠️ {sec_status}"
-
-    lines = [
-        f"🚨 MEMECOIN SCANNER — {level_titles.get(alert_level, alert_level)}",
-        "",
-        "🪙 TOKEN",
-        f"  {b.get('symbol','?')} — {b.get('name','?')}",
-        f"  ⛓️ {p.get('chainId')}  |  DEX: {p.get('dexId')}",
-        "",
-        "📊 SETUP",
-        f"  🎯 Score: {score}/100  |  Base: {base_score}/100",
-        f"  ⚡ Burst: {burst:.1f}x  |  Accel: {accel}",
-        f"  🧠 Smart: +{smart_bonus_value}  |  Learning: {num(p.get('_adaptive_bonus',0)):+.1f}",
-        f"  📈 Buy pressure: {bp:.1f}% ({buys} buy / {sells} sell)",
-        f"  📈 Price 1H: {num(pc.get('h1')):+.1f}%",
-        "",
-        "💰 MARKET",
-        f"  💰 Market Cap: ${mc:,.0f}",
-        f"  💧 Liquidity: ${liq:,.0f}",
-        f"  🔥 Volume 1H: ${v1:,.0f}",
-        f"  📊 Volume 24H: ${v24:,.0f}",
-        "",
-        "💵 POSITION SIZING",
-        f"  🟢 SUGGESTED POSITION: {suggested_text}",
-        f"  🔒 MAX TECHNICAL POSITION: {max_position_text}",
-        "  📐 Max position = ~2% AMM price impact",
-        "  ℹ️ Suggested = MC + liquidity, capped by max technical position",
-        "",
-        f"🧠 SMART WALLET BONUS: +{smart_bonus_value}",
-    ]
-
-    if ranked:
-        lines.append(f"👛 QUALIFIED WALLETS: {len(ranked)}")
-        for _, wallet, wins, calls, wr, early_rate, avg_peak, resolved in ranked[:3]:
-            lines.append(
-                f"  • {wallet[:8]}…{wallet[-6:]} — "
-                f"{wins}W/{calls} call | WR {wr*100:.0f}% | early {early_rate*100:.0f}%"
-            )
-    else:
-        lines.append("👛 QUALIFIED WALLETS: nessuno")
-
-    lines += [
-        "",
-        f"🛡️ SECURITY: {security_text}",
-        "",
-        "🎯 EXIT STRATEGY: TP +30% / +60% / +90% | RUNNER 10% | TRAILING -30%",
-        "",
-        f"📜 CONTRACT: {b.get('address')}",
-        f"🔗 DEXSCREENER: {p.get('url')}",
-    ]
-
-    return "\n".join(lines)
+    )
+    print(
+        f"[TRADING] BUY trigger: {best.get('baseToken',{}).get('symbol','?')} | "
+        f"score={best.get('_final_score')} | burst={num(best.get('_burst')):.2f}x | "
+        f"accel={num(best.get('_accel')):.2f}x"
+    )
+    execute_entry(best)
 
 
 def main():
