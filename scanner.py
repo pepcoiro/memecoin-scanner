@@ -74,6 +74,18 @@ TRACK_UPDATE_LIMIT = 300
 
 # Position sizing: estimated maximum entry size for ~2% AMM price impact.
 MAX_POSITION_PRICE_IMPACT = 0.02
+
+# Automated exit strategy (applied after an entry is executed).
+# Sell 30% of the original position at +30%, another 30% at +60%,
+# another 30% at +90%, and keep the final 10% as a runner.
+TP1_PCT = 0.30
+TP2_PCT = 0.60
+TP3_PCT = 0.90
+TP1_SELL_FRACTION = 0.30
+TP2_SELL_FRACTION = 0.30
+TP3_SELL_FRACTION = 0.30
+RUNNER_FRACTION = 0.10
+TRAILING_STOP_PCT = 0.30
 DEFAULT_USD_TO_EUR = 0.892  # fallback; refreshed from ECB when available
 NATIVE_SYMBOLS = {"solana": "SOL"}
 _USD_TO_EUR_CACHE = {"rate": None, "ts": 0}
@@ -1347,7 +1359,7 @@ def build_telegram_alert(p, sec, smart_bonus_value, ranked, alert_level="INTERES
         "",
         f"🛡️ SECURITY: {security_text}",
         "",
-        "🎯 EXIT STRATEGY: DA CONFIGURARE",
+        "🎯 EXIT STRATEGY: TP +30% / +60% / +90% | RUNNER 10% | TRAILING -30%",
         "",
         f"📜 CONTRACT: {b.get('address')}",
         f"🔗 DEXSCREENER: {p.get('url')}",
