@@ -426,7 +426,8 @@ def discover():
     except:
         state = {}
 
-    rows, newstate, seen = [], {"_positions": state.get("_positions", {})}, set()
+    rows, newstate, seen = [], dict(state), set()
+    newstate["_positions"] = state.get("_positions", {})
 
     for p in pairs:
         chain = str(p.get("chainId","")).lower()
