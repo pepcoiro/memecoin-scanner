@@ -1714,6 +1714,57 @@ def auto_trade_best_candidate(rows):
     execute_entry(best)
 
 
+def build_telegram_alert(p, sec, smart_bonus_value, ranked, alert_level="INTERESTING"):
+    b = p.get("baseToken") or {}
+    level_titles = {
+        "INTERESTING": "🟢 INTERESTING — DA VALUTARE",
+        "STRONG": "🔥 STRONG — SETUP INTERESSANTE",
+        "SMART": "🧠 SMART WALLET — SEGNALE FORTE",
+    }
+    liq = num((p.get("liquidity") or {}).get("usd"))
+    mc = num(p.get("marketCap") or p.get("fdv"))
+    v1 = num((p.get("volume") or {}).get("h1"))
+    tx = (p.get("txns") or {}).get("h1") or {}
+    buys = int(num(tx.get("buys"))); sells = int(num(tx.get("sells")))
+    bp = 100 * buys / (buys + sells) if buys + sells else 0
+    pc = p.get("priceChange") or {}
+    accel = f"{p.get('_accel', 0):.1f}x" if p.get("_has_accel_history") else "N/D"
+
+    lines = [
+        f"🚨 MEMECOIN SCANNER — {level_titles.get(alert_level, alert_level)}",
+        "",
+        f"🪙 {b.get('symbol','?')} — {b.get('name','?')}",
+        f"⛓️ {p.get('chainId')} / {p.get('dexId')}",
+        "",
+        f"🎯 EARLY SCORE: {p.get('_final_score', 0)}/100",
+        f"⚡ BURST: {p.get('_burst', 0):.1f}x",
+        f"📈 ACCEL: {accel}",
+        f"📊 BUY PRESSURE: {bp:.1f}%",
+        f"💰 MC: ${mc:,.0f}",
+        f"💧 LIQUIDITY: ${liq:,.0f}",
+        f"🔥 VOLUME 1H: ${v1:,.0f}",
+        f"📈 PRICE 1H: {num(pc.get('h1')):+.1f}%",
+        "",
+        f"🧠 SMART WALLET BONUS: +{smart_bonus_value}",
+    ]
+
+    if ranked:
+        lines.append(f"👛 Wallet qualificati: {len(ranked)}")
+        for _, wallet, wins, calls, wr, early_rate, avg_peak, resolved in ranked[:3]:
+            lines.append(f"  • {wallet[:8]}…{wallet[-6:]} — {wins}W/{calls} call | WR {wr*100:.0f}% | early {early_rate*100:.0f}%")
+    else:
+        lines.append("👛 Smart wallet: nessuno")
+
+    lines += [
+        "",
+        "🛡️ SECURITY: PASS",
+        "",
+        f"🔗 {p.get('url')}",
+    ]
+    return "\n".join(lines)
+
+
+
 def main():
     enable_ansi()
     manage_open_positions()
