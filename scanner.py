@@ -1717,7 +1717,6 @@ def main():
     rows=discover()
     if not rows:
         print("Nessun candidato.")
-        raise
         return
 
     evidence, wallets = update_smart_wallets(rows)
@@ -1935,5 +1934,5 @@ if __name__=="__main__":
     except Exception:
         print("\nERRORE NON GESTITO:\n")
         traceback.print_exc()
-        print("\nIl terminale restera' aperto per permetterti di leggere l'errore.")
-        input("\nPremi INVIO per chiudere...")
+        print("\nWorkflow terminato con errore; traceback sopra.")
+        raise
