@@ -1221,6 +1221,14 @@ def build_telegram_alert(p, sec, smart_bonus_value, ranked, alert_level="INTERES
         "",
         "🛡️ SECURITY: PASS",
         "",
+        "🎯 EXIT STRATEGY",
+        "TP1: +50%  → vendi 20%",
+        "TP2: +100% → vendi 30%",
+        "TP3: +200% → vendi 25%",
+        "TP4: +400% → vendi 15%",
+        "SL:  -20%  → chiudi il residuo",
+        "RUNNER: 10% → lascia correre",
+        "",
         f"🔗 {p.get('url')}",
     ]
     return "\n".join(lines)
