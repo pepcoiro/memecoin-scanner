@@ -92,8 +92,7 @@ SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY", "").strip()
 SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com").strip()
 POSITIONS_FILE = os.path.join(SCRIPT_DIR, "positions.json")
 WALLET_BUDGET_FRACTION = 0.50
-SOL_RESERVE = 0.03
-MC_BUDGET_FRACTION = 0.0025
+SOL_RESERVE = 0.0
 LIQ_BUDGET_FRACTION = 0.01
 MAX_EXECUTION_PRICE_IMPACT = 0.02
 MAX_ENTRY_SLIPPAGE_BPS = 500
@@ -1422,37 +1421,45 @@ def _sol_usd_from_pair(p):
     return usd/native if usd>0 and native>0 else 0.0
 
 def calculate_entry_budget(p,wallet_sol,sol_usd):
-    if wallet_sol<=SOL_RESERVE or sol_usd<=0:
-        return {"usd":0.0,"sol":0.0,"reason":"budget SOL insufficiente"}
+    if wallet_sol<=0 or sol_usd<=0:
+        return {"usd":0.0,"sol":0.0,"reason":"saldo SOL insufficiente"}
 
-    available_sol=max(0.0,wallet_sol-SOL_RESERVE)
+    available_sol=wallet_sol
     wallet_cap_usd=available_sol*WALLET_BUDGET_FRACTION*sol_usd
     mc=num(p.get("marketCap") or p.get("fdv"))
     liq=num((p.get("liquidity") or {}).get("usd"))
     impact_cap_usd=estimate_max_position(p).get("usd",0.0)
 
-    # ALL sizing constraints are percentages. No fixed EUR ceiling/floor.
-    caps=[
-        wallet_cap_usd,
-        mc*MC_BUDGET_FRACTION if mc>0 else 0.0,
-        liq*LIQ_BUDGET_FRACTION if liq>0 else 0.0,
-        impact_cap_usd,
-    ]
+    # Liquidity sizing is percentage-based. Below $10k we do not trade.
+    if liq < 10_000:
+        return {"usd":0.0,"sol":0.0,"reason":"liquidità sotto $10k"}
+    if liq < 25_000:
+        liq_fraction=0.01
+    elif liq < 50_000:
+        liq_fraction=0.015
+    elif liq < 100_000:
+        liq_fraction=0.02
+    elif liq < 250_000:
+        liq_fraction=0.03
+    elif liq < 500_000:
+        liq_fraction=0.04
+    else:
+        liq_fraction=0.05
+
+    # Market cap is an eligibility constraint here, not an invented fixed-euro
+    # position cap. The scanner already requires MIN_MC <= MC <= MAX_MC.
+    caps=[wallet_cap_usd, liq*liq_fraction, impact_cap_usd]
     positive=[x for x in caps if x>0]
     usd=min(positive) if positive else 0.0
 
-    # Jupiter Trigger V2 requires each price order to be >= $10.
-    # Since the runner is 10%, the whole position must therefore be >= $100
-    # for all four exit orders to be created. This is a Jupiter constraint,
-    # not a user-defined € limit.
     return {
         "usd":usd,
         "sol":usd/sol_usd,
         "reason":"OK",
         "wallet_cap_usd":wallet_cap_usd,
-        "mc_cap_usd":mc*MC_BUDGET_FRACTION,
-        "liq_cap_usd":liq*LIQ_BUDGET_FRACTION,
+        "liq_cap_usd":liq*liq_fraction,
         "impact_cap_usd":impact_cap_usd,
+        "market_cap_usd":mc,
     }
 
 def _token_balance_atomic(pubkey,mint):
