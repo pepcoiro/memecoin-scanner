@@ -62,6 +62,17 @@ MIN_MC = 20_000
 MIN_VOL_24H = 20_000
 TOP_N = 15
 
+# Position sizing: estimated maximum entry size for ~2% AMM price impact.
+MAX_POSITION_PRICE_IMPACT = 0.02
+DEFAULT_USD_TO_EUR = 0.892  # fallback; refreshed from ECB when available
+NATIVE_SYMBOLS = {
+    "ethereum": "ETH", "base": "ETH", "arbitrum": "ETH",
+    "optimism": "ETH", "linea": "ETH", "zksync": "ETH",
+    "bsc": "BNB", "solana": "SOL", "polygon": "POL",
+    "avalanche": "AVAX", "monad": "MON",
+}
+_USD_TO_EUR_CACHE = {"rate": None, "ts": 0}
+
 SMART_WALLET_BONUS_MAX = 22
 EARLY_WINDOW_MIN = 60
 MAX_WALLETS_PER_TOKEN = 30
@@ -107,6 +118,70 @@ def get_json(url, **kwargs):
     r = session.get(url, timeout=TIMEOUT, **kwargs)
     r.raise_for_status()
     return r.json()
+
+def get_usd_to_eur_rate():
+    """Return USD→EUR using latest ECB observation, with a safe fallback."""
+    now = time.time()
+    if _USD_TO_EUR_CACHE["rate"] and now - _USD_TO_EUR_CACHE["ts"] < 6 * 3600:
+        return _USD_TO_EUR_CACHE["rate"]
+    try:
+        url = (
+            "https://data-api.ecb.europa.eu/service/data/EXR/D.USD.EUR.SP00.A"
+            "?format=csvdata&lastNObservations=1"
+        )
+        r = session.get(url, timeout=10)
+        r.raise_for_status()
+        lines = [line.strip() for line in r.text.splitlines() if line.strip()]
+        if len(lines) >= 2:
+            headers = [h.strip().strip('\"') for h in lines[0].split(',')]
+            values = [v.strip().strip('\"') for v in lines[-1].split(',')]
+            rate = float(values[headers.index("OBS_VALUE")])
+            if rate > 0:
+                _USD_TO_EUR_CACHE.update(rate=rate, ts=now)
+                return rate
+    except Exception:
+        pass
+    return DEFAULT_USD_TO_EUR
+
+def native_symbol(chain):
+    return NATIVE_SYMBOLS.get(str(chain or "").lower(), "NATIVE")
+
+def estimate_max_position(p):
+    """Estimate max entry for about 2% AMM price impact.
+
+    This uses a conservative constant-product approximation from the reported
+    pool liquidity. Real execution can differ because of concentrated liquidity,
+    fees, routing, MEV and other market conditions.
+    """
+    liq_usd = num((p.get("liquidity") or {}).get("usd"))
+    if liq_usd <= 0:
+        return {"usd": 0.0, "eur": 0.0, "native": 0.0,
+                "native_symbol": native_symbol(p.get("chainId")),
+                "impact": MAX_POSITION_PRICE_IMPACT}
+
+    impact = MAX_POSITION_PRICE_IMPACT
+    max_usd = (liq_usd / 2.0) * (1.0 - 1.0 / ((1.0 + impact) ** 0.5))
+    max_eur = max_usd * get_usd_to_eur_rate()
+
+    price_usd = num(p.get("priceUsd"))
+    price_native = num(p.get("priceNative"))
+    native_usd = (price_usd / price_native) if price_usd > 0 and price_native > 0 else 0.0
+    max_native = max_usd / native_usd if native_usd > 0 else 0.0
+
+    return {"usd": max_usd, "eur": max_eur, "native": max_native,
+            "native_symbol": native_symbol(p.get("chainId")),
+            "native_usd": native_usd, "impact": impact}
+
+def format_position_size(p):
+    size = estimate_max_position(p)
+    native = size["native"]
+    if native >= 100:
+        native_text = f"{native:,.0f} {size['native_symbol']}"
+    elif native >= 1:
+        native_text = f"{native:,.2f} {size['native_symbol']}"
+    else:
+        native_text = f"{native:,.4f} {size['native_symbol']}"
+    return f"€{size['eur']:,.0f}  |  {native_text}", size
 
 def age_hours(p):
     c = p.get("pairCreatedAt")
@@ -849,6 +924,7 @@ def fmt(p, sec, smart_bonus_value=0, ranked=None):
         f"Contract: {b.get('address')}\n"
         f"Score: {c(str(p.get('_final_score',p.get('_score')))+'/100',score_color(p.get('_final_score',p.get('_score'))),True)} | Base {p.get('_score')}/100 | Accel {((format(p.get('_accel',0), '.1f') + 'x') if p.get('_has_accel_history') else 'N/D (prima scansione)')} | Burst {c(f"{p.get('_burst',0):.1f}x",MAGENTA)}\n"
         f"MC: ${mc:,.0f} | Liquidity: ${liq:,.0f} | Vol/Liq {p.get('_liq_ratio',0):.1f}x\n"
+        f"Max position (~2% impact): {format_position_size(p)[0]}\n"
         f"Volume 1h: ${v1:,.0f} | 24h: ${v24:,.0f}\n"
         f"Buy/Sell 1h: {buys}/{sells} ({bp:.1f}% buy)\n"
         f"Price: 1h {num(pc.get('h1')):+.1f}% | 6h {num(pc.get('h6')):+.1f}% | 24h {num(pc.get('h24')):+.1f}%\n"
@@ -1191,6 +1267,7 @@ def build_telegram_alert(p, sec, smart_bonus_value, ranked, alert_level="INTERES
     bp = 100 * buys / (buys + sells) if buys + sells else 0
     pc = p.get("priceChange") or {}
     accel = f"{p.get('_accel', 0):.1f}x" if p.get("_has_accel_history") else "N/D"
+    position_text, _position = format_position_size(p)
 
     lines = [
         f"🚨 MEMECOIN SCANNER — {level_titles.get(alert_level, alert_level)}",
@@ -1204,6 +1281,7 @@ def build_telegram_alert(p, sec, smart_bonus_value, ranked, alert_level="INTERES
         f"📊 BUY PRESSURE: {bp:.1f}%",
         f"💰 MC: ${mc:,.0f}",
         f"💧 LIQUIDITY: ${liq:,.0f}",
+        f"💵 MAX POSITION (~2% IMPACT): {position_text}",
         f"🔥 VOLUME 1H: ${v1:,.0f}",
         f"📈 PRICE 1H: {num(pc.get('h1')):+.1f}%",
         "",
@@ -1219,6 +1297,7 @@ def build_telegram_alert(p, sec, smart_bonus_value, ranked, alert_level="INTERES
 
     lines += [
         "",
+        "📐 Stima prudenziale: target ~2% di price impact all'ingresso.",
         "🛡️ SECURITY: PASS",
         "",
         "🎯 EXIT STRATEGY",
