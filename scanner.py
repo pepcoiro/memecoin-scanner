@@ -103,6 +103,7 @@ _USD_TO_EUR_CACHE = {"rate": None, "ts": 0}
 SMART_WALLET_BONUS_MAX = 22
 EARLY_WINDOW_MIN = 60
 MAX_WALLETS_PER_TOKEN = 30
+KNOWN_INFRA_WALLETS = set()
 MIN_WALLET_WINS = 2
 WALLET_PENDING_HOURS = 48
 MAX_ENTRY_P1_FOR_SMART = 60
@@ -1716,7 +1717,7 @@ def main():
     rows=discover()
     if not rows:
         print("Nessun candidato.")
-        input("\nPremi INVIO per chiudere...")
+        raise
         return
 
     evidence, wallets = update_smart_wallets(rows)
