@@ -1,4 +1,3 @@
-
 import os, json, time, traceback, requests
 from collections import defaultdict
 
@@ -133,8 +132,8 @@ def get_usd_to_eur_rate():
         r.raise_for_status()
         lines = [line.strip() for line in r.text.splitlines() if line.strip()]
         if len(lines) >= 2:
-            headers = [h.strip().strip('\"') for h in lines[0].split(',')]
-            values = [v.strip().strip('\"') for v in lines[-1].split(',')]
+            headers = [h.strip().strip('"') for h in lines[0].split(',')]
+            values = [v.strip().strip('"') for v in lines[-1].split(',')]
             rate = float(values[headers.index("OBS_VALUE")])
             if rate > 0:
                 _USD_TO_EUR_CACHE.update(rate=rate, ts=now)
@@ -182,6 +181,52 @@ def format_position_size(p):
     else:
         native_text = f"{native:,.4f} {size['native_symbol']}"
     return f"€{size['eur']:,.0f}  |  {native_text}", size
+
+def suggested_position_size(p):
+    """Suggest a conservative position using market cap + liquidity.
+
+    The suggestion is intentionally separate from the technical ~2% AMM-impact
+    ceiling. It uses 0.25% of market cap and 1% of reported liquidity, then
+    caps the result at the existing technical maximum.
+    """
+    liq_usd = num((p.get("liquidity") or {}).get("usd"))
+    mc_usd = num(p.get("marketCap") or p.get("fdv"))
+    max_size = estimate_max_position(p)
+
+    if liq_usd <= 0 or mc_usd <= 0:
+        return {
+            "usd": 0.0,
+            "eur": 0.0,
+            "native": 0.0,
+            "native_symbol": max_size["native_symbol"],
+        }
+
+    mc_cap = mc_usd * 0.0025
+    liq_cap = liq_usd * 0.01
+    suggested_usd = min(mc_cap, liq_cap, max_size["usd"])
+
+    rate = get_usd_to_eur_rate()
+    suggested_eur = suggested_usd * rate
+    native_usd = max_size.get("native_usd", 0.0)
+    suggested_native = suggested_usd / native_usd if native_usd > 0 else 0.0
+
+    return {
+        "usd": suggested_usd,
+        "eur": suggested_eur,
+        "native": suggested_native,
+        "native_symbol": max_size["native_symbol"],
+    }
+
+def format_suggested_position(p):
+    size = suggested_position_size(p)
+    native = size["native"]
+    if native >= 100:
+        native_text = f"{native:,.0f} {size['native_symbol']}"
+    elif native >= 1:
+        native_text = f"{native:,.2f} {size['native_symbol']}"
+    else:
+        native_text = f"{native:,.4f} {size['native_symbol']}"
+    return f"€{size['eur']:,.0f}  |  ${size['usd']:,.0f}  |  {native_text}", size
 
 def age_hours(p):
     c = p.get("pairCreatedAt")
@@ -750,7 +795,6 @@ def solana_early_buyers(p):
     return buyers
 
 
-
 def goplus_access_token(force=False):
     global GOPLUS_ACCESS_TOKEN, GOPLUS_ACCESS_EXPIRES
 
@@ -1259,57 +1303,88 @@ def build_telegram_alert(p, sec, smart_bonus_value, ranked, alert_level="INTERES
         "STRONG": "🔥 STRONG — SETUP INTERESSANTE",
         "SMART": "🧠 SMART WALLET — SEGNALE FORTE",
     }
+
     liq = num((p.get("liquidity") or {}).get("usd"))
     mc = num(p.get("marketCap") or p.get("fdv"))
     v1 = num((p.get("volume") or {}).get("h1"))
+    v24 = num((p.get("volume") or {}).get("h24"))
     tx = (p.get("txns") or {}).get("h1") or {}
-    buys = int(num(tx.get("buys"))); sells = int(num(tx.get("sells")))
-    bp = 100 * buys / (buys + sells) if buys + sells else 0
+    buys = int(num(tx.get("buys")))
+    sells = int(num(tx.get("sells")))
+    total_tx = buys + sells
+    bp = 100 * buys / total_tx if total_tx else 0
     pc = p.get("priceChange") or {}
+
     accel = f"{p.get('_accel', 0):.1f}x" if p.get("_has_accel_history") else "N/D"
-    position_text, _position = format_position_size(p)
+    burst = num(p.get("_burst", 0))
+    score = p.get("_final_score", 0)
+    base_score = p.get("_score", 0)
+
+    max_position_text, _ = format_position_size(p)
+    suggested_text, suggested = format_suggested_position(p)
+
+    sec_status = sec.get("status", "UNKNOWN")
+    if sec_status == "PASS":
+        security_text = "✅ PASS"
+    elif sec_status == "RISK":
+        security_text = "🔴 RISK"
+    else:
+        security_text = f"⚠️ {sec_status}"
 
     lines = [
         f"🚨 MEMECOIN SCANNER — {level_titles.get(alert_level, alert_level)}",
         "",
-        f"🪙 {b.get('symbol','?')} — {b.get('name','?')}",
-        f"⛓️ {p.get('chainId')} / {p.get('dexId')}",
+        "🪙 TOKEN",
+        f"  {b.get('symbol','?')} — {b.get('name','?')}",
+        f"  ⛓️ {p.get('chainId')}  |  DEX: {p.get('dexId')}",
         "",
-        f"🎯 EARLY SCORE: {p.get('_final_score', 0)}/100",
-        f"⚡ BURST: {p.get('_burst', 0):.1f}x",
-        f"📈 ACCEL: {accel}",
-        f"📊 BUY PRESSURE: {bp:.1f}%",
-        f"💰 MC: ${mc:,.0f}",
-        f"💧 LIQUIDITY: ${liq:,.0f}",
-        f"💵 MAX POSITION (~2% IMPACT): {position_text}",
-        f"🔥 VOLUME 1H: ${v1:,.0f}",
-        f"📈 PRICE 1H: {num(pc.get('h1')):+.1f}%",
+        "📊 SETUP",
+        f"  🎯 Score: {score}/100  |  Base: {base_score}/100",
+        f"  ⚡ Burst: {burst:.1f}x  |  Accel: {accel}",
+        f"  📈 Buy pressure: {bp:.1f}% ({buys} buy / {sells} sell)",
+        f"  📈 Price 1H: {num(pc.get('h1')):+.1f}%",
+        "",
+        "💰 MARKET",
+        f"  💰 Market Cap: ${mc:,.0f}",
+        f"  💧 Liquidity: ${liq:,.0f}",
+        f"  🔥 Volume 1H: ${v1:,.0f}",
+        f"  📊 Volume 24H: ${v24:,.0f}",
+        "",
+        "💵 POSITION SIZING",
+        f"  🟢 SUGGESTED POSITION: {suggested_text}",
+        f"  🔒 MAX TECHNICAL POSITION: {max_position_text}",
+        "  📐 Max position = ~2% AMM price impact",
+        "  ℹ️ Suggested = MC + liquidity, capped by max technical position",
         "",
         f"🧠 SMART WALLET BONUS: +{smart_bonus_value}",
     ]
 
     if ranked:
-        lines.append(f"👛 Wallet qualificati: {len(ranked)}")
+        lines.append(f"👛 QUALIFIED WALLETS: {len(ranked)}")
         for _, wallet, wins, calls, wr, early_rate, avg_peak, resolved in ranked[:3]:
-            lines.append(f"  • {wallet[:8]}…{wallet[-6:]} — {wins}W/{calls} call | WR {wr*100:.0f}% | early {early_rate*100:.0f}%")
+            lines.append(
+                f"  • {wallet[:8]}…{wallet[-6:]} — "
+                f"{wins}W/{calls} call | WR {wr*100:.0f}% | early {early_rate*100:.0f}%"
+            )
     else:
-        lines.append("👛 Smart wallet: nessuno")
+        lines.append("👛 QUALIFIED WALLETS: nessuno")
 
     lines += [
         "",
-        "📐 Stima prudenziale: target ~2% di price impact all'ingresso.",
-        "🛡️ SECURITY: PASS",
+        f"🛡️ SECURITY: {security_text}",
         "",
         "🎯 EXIT STRATEGY",
-        "TP1: +50%  → vendi 20%",
-        "TP2: +100% → vendi 30%",
-        "TP3: +200% → vendi 25%",
-        "TP4: +400% → vendi 15%",
-        "SL:  -20%  → chiudi il residuo",
-        "RUNNER: 10% → lascia correre",
+        "  TP1: +50%  → vendi 20%",
+        "  TP2: +100% → vendi 30%",
+        "  TP3: +200% → vendi 25%",
+        "  TP4: +400% → vendi 15%",
+        "  SL:  -20%  → chiudi il residuo",
+        "  RUNNER: 10% → lascia correre",
         "",
-        f"🔗 {p.get('url')}",
+        f"📜 CONTRACT: {b.get('address')}",
+        f"🔗 DEXSCREENER: {p.get('url')}",
     ]
+
     return "\n".join(lines)
 
 
@@ -1497,8 +1572,7 @@ def main():
             print_trade_plan()
             print(c("═"*80, GREEN, True))
 
-            alert_text = build_telegram_alert(
-                p,
+            alert_text = build_telegram_alert(                p,
                 sec,
                 p["_smart_bonus"],
                 p["_smart_ranked"],
