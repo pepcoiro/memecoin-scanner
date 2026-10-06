@@ -1563,6 +1563,13 @@ def manage_open_positions():
             jwt=trigger_jwt(wallet)
             orders=_trigger_request("GET","/orders/history?state=active&mint="+mint,jwt).get("orders",[])
 
+            # Once Jupiter has no active exit orders for this mint, the position
+            # is finished and the scanner may look for a new entry.
+            if not orders:
+                position["closed"]=True
+                position["closed_ts"]=time.time()
+                continue
+
             # IMPORTANT: this function never sells. It only changes Jupiter's
             # existing OCO stop prices. Jupiter remains the execution engine.
             new_sl=high*(1.0-TRAILING_STOP_PCT)
