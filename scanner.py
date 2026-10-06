@@ -91,7 +91,7 @@ AUTO_TRADE_ENABLED = os.getenv("AUTO_TRADE_ENABLED", "true").strip().lower() in 
 SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY", "").strip()
 SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com").strip()
 POSITIONS_FILE = os.path.join(SCRIPT_DIR, "positions.json")
-WALLET_BUDGET_FRACTION = 0.25
+WALLET_BUDGET_FRACTION = 0.50
 SOL_RESERVE = 0.03
 MC_BUDGET_FRACTION = 0.0025
 LIQ_BUDGET_FRACTION = 0.01
@@ -1427,9 +1427,6 @@ def calculate_entry_budget(p,wallet_sol,sol_usd):
     # Since the runner is 10%, the whole position must therefore be >= $100
     # for all four exit orders to be created. This is a Jupiter constraint,
     # not a user-defined € limit.
-    if usd*RUNNER_FRACTION < 10.0:
-        return {"usd":usd,"sol":usd/sol_usd,"reason":"position too small for Jupiter Trigger: 10% runner < $10"}
-
     return {
         "usd":usd,
         "sol":usd/sol_usd,
