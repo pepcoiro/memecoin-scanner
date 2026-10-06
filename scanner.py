@@ -1,4 +1,5 @@
-import os, json, time, traceback, requests
+import os, json, time, traceback, requests, math
+from datetime import datetime, timezone
 from collections import defaultdict
 
 RESET="\033[0m"; BOLD="\033[1m"; DIM="\033[2m"; RED="\033[91m"; GREEN="\033[92m"; YELLOW="\033[93m"; BLUE="\033[94m"; MAGENTA="\033[95m"; CYAN="\033[96m"; WHITE="\033[97m"
@@ -20,6 +21,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(SCRIPT_DIR, "scanner_state.json")
 WALLET_FILE = os.path.join(SCRIPT_DIR, "wallet_state.json")
 TELEGRAM_ALERT_FILE = os.path.join(SCRIPT_DIR, "telegram_alert_state.json")
+OUTCOME_FILE = os.path.join(SCRIPT_DIR, "alert_outcomes.json")
+ANALYTICS_FILE = os.path.join(SCRIPT_DIR, "scanner_analytics.json")
 
 WATCH_CHAINS = {
     "ethereum", "bsc", "solana", "base", "arbitrum", "polygon",
@@ -61,6 +64,17 @@ MIN_MC = 20_000
 MIN_VOL_24H = 20_000
 TOP_N = 15
 
+# Learning / validation layer.
+# It records alert-time features and later outcomes without changing the scanner
+# until enough independent observations exist.
+OUTCOME_TRACK_HOURS = (1, 6, 24, 168)
+LEARNING_MIN_RESOLVED = 50
+ADAPTIVE_BONUS_MAX = 12
+ADAPTIVE_MIN_LIFT = 1.20
+ADAPTIVE_MAX_LIFT = 3.00
+TRACK_MAX_RECORDS = 5000
+TRACK_UPDATE_LIMIT = 300
+
 # Position sizing: estimated maximum entry size for ~2% AMM price impact.
 MAX_POSITION_PRICE_IMPACT = 0.02
 DEFAULT_USD_TO_EUR = 0.892  # fallback; refreshed from ECB when available
@@ -79,6 +93,8 @@ MIN_WALLET_WINS = 2
 WALLET_PENDING_HOURS = 48
 MAX_ENTRY_P1_FOR_SMART = 60
 MAX_ENTRY_P24_FOR_SMART = 150
+ALERT_MAX_P1 = 60
+ALERT_MAX_P24 = 150
 
 
 session = requests.Session()
@@ -114,9 +130,21 @@ def num(x):
         return 0.0
 
 def get_json(url, **kwargs):
-    r = session.get(url, timeout=TIMEOUT, **kwargs)
-    r.raise_for_status()
-    return r.json()
+    last_error = None
+    for attempt in range(3):
+        try:
+            r = session.get(url, timeout=TIMEOUT, **kwargs)
+            if r.status_code == 429:
+                retry_after = num(r.headers.get("Retry-After")) or (1.5 * (attempt + 1))
+                time.sleep(min(8, retry_after))
+                continue
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep(0.8 * (2 ** attempt))
+    raise last_error
 
 def get_usd_to_eur_rate():
     """Return USD→EUR using latest ECB observation, with a safe fallback."""
@@ -159,7 +187,11 @@ def estimate_max_position(p):
                 "impact": MAX_POSITION_PRICE_IMPACT}
 
     impact = MAX_POSITION_PRICE_IMPACT
-    max_usd = (liq_usd / 2.0) * (1.0 - 1.0 / ((1.0 + impact) ** 0.5))
+    # For a constant-product pool with equal USD reserves, a buy that moves
+    # price by +impact uses quote reserve x = 1 - 1/sqrt(1+impact).
+    # This remains only an approximation for concentrated-liquidity pools.
+    reserve_quote = liq_usd / 2.0
+    max_usd = reserve_quote * (1.0 - 1.0 / math.sqrt(1.0 + impact))
     max_eur = max_usd * get_usd_to_eur_rate()
 
     price_usd = num(p.get("priceUsd"))
@@ -235,7 +267,7 @@ def age_hours(p):
     return max(0, (time.time()*1000-c)/3600000)
 
 def raw_score(p, previous=None):
-    """V8 EARLY SCORE.
+    """V11 EARLY SCORE + empirical learning layer.
     Focuses on early setups rather than tokens that already made a huge move.
     Adds Volume Burst (current 1h activity versus the token's 24h hourly pace)
     and treats scan-to-scan acceleration as a secondary signal.
@@ -304,8 +336,14 @@ def raw_score(p, previous=None):
     elif liq_ratio >= 15: s -= 20
     elif liq_ratio >= 10: s -= 10
 
-    # 5) BUY PRESSURE
-    total = buys+sells
+    # 5) TRANSACTION QUALITY
+    # Buy pressure alone is easy to fake; activity breadth is a second, weaker signal.
+    total = buys + sells
+    if total >= 250: s += 4
+    elif total >= 100: s += 2
+    elif total < 20: s -= 2
+
+    # 6) BUY PRESSURE
     if total:
         bp = buys/total
         if bp >= .68: s += 12
@@ -456,16 +494,26 @@ def alchemy_rpc(chain, method, params):
         return None
     url = f"https://{host}/v2/{ALCHEMY_API_KEY}"
     payload = {"jsonrpc":"2.0","id":1,"method":method,"params":params}
-    try:
-        r = session.post(url, json=payload, timeout=TIMEOUT)
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        if data.get("error"):
-            return None
-        return data.get("result")
-    except:
-        return None
+    for attempt in range(3):
+        try:
+            r = session.post(url, json=payload, timeout=TIMEOUT)
+            if r.status_code == 429:
+                time.sleep(min(8, 1.5 * (attempt + 1)))
+                continue
+            if r.status_code != 200:
+                return None
+            data = r.json()
+            if data.get("error"):
+                code = num((data.get("error") or {}).get("code"))
+                if code in {-32005, 429} and attempt < 2:
+                    time.sleep(min(8, 1.5 * (attempt + 1)))
+                    continue
+                return None
+            return data.get("result")
+        except Exception:
+            if attempt < 2:
+                time.sleep(0.8 * (2 ** attempt))
+    return None
 
 def hex_block(n):
     return hex(max(0, int(n)))
@@ -627,6 +675,8 @@ def save_wallets(data):
         print("[!] Impossibile scrivere wallet_state.json: continuo la scansione.")
 
 def _update_wallet_record(wallets, chain, wallet, token_id, p):
+    if not wallet_is_seed_eligible(wallet):
+        return wallets.get(f"{chain}:{wallet}", {})
     key=f"{chain}:{wallet}"
     rec=wallets.setdefault(key, {
         "chain":chain, "wallet":wallet, "calls":0, "wins":0, "losses":0,
@@ -661,6 +711,8 @@ def rank_wallets_for_token(wallets, chain, buyers):
     for w in buyers:
         rec=wallets.get(f"{chain}:{w}")
         if not rec or int(rec.get("calls",0)) < MIN_WALLET_WINS:
+            continue
+        if int(rec.get("wins",0)) + int(rec.get("losses",0)) < 2:
             continue
         calls=int(rec.get("calls",0)); wins=int(rec.get("wins",0)); losses=int(rec.get("losses",0))
         resolved=wins+losses
@@ -712,8 +764,11 @@ def smart_bonus(p,evidence):
     bonus=0
     for _,wallet,wins,calls,wr,early_rate,avg_peak,resolved in ranked[:3]:
         # Require actual resolved wins. Multiple independent strong wallets stack.
-        per=min(8.0, 1.0 + wins*0.9 + wr*3.0 + early_rate*1.5)
-        if resolved < 2: per *= 0.55
+        # A single marginal reputation record must never contribute a large
+        # score jump. Require at least two resolved outcomes for full weight.
+        if resolved < 2:
+            continue
+        per=min(6.0, 0.8 + wins*0.8 + wr*2.5 + early_rate*1.2)
         bonus += per
     return min(SMART_WALLET_BONUS_MAX,round(bonus,1)),ranked
 
@@ -945,7 +1000,66 @@ def security(p):
         except Exception:
             pass
 
-    return {"status":"RISK" if bad else "PASS", "bad":bad, "raw":data}
+    result = {"status":"RISK" if bad else "PASS", "bad":bad, "raw":data}
+    quality_penalty, quality_flags = security_quality(p, result)
+    result["quality_penalty"] = quality_penalty
+    result["quality_flags"] = quality_flags
+    # Structural concentration alone is not necessarily a honeypot, so it does
+    # not flip PASS to RISK; it does reduce the score/alert eligibility.
+    return result
+
+
+def security_quality(p, sec):
+    """Normalize GoPlus structural risk into a small independent quality penalty."""
+    raw = sec.get("raw") or {}
+    risk = 0
+    flags = []
+
+    def pct_value(*keys):
+        for key in keys:
+            if key in raw and raw.get(key) not in (None, ""):
+                try:
+                    v = float(raw.get(key))
+                    # GoPlus sometimes returns fractions and sometimes percentages.
+                    return v * 100 if 0 <= v <= 1 else v
+                except Exception:
+                    pass
+        return None
+
+    # Creator/owner concentration. Field names differ by chain/version, so inspect
+    # only values that are actually present.
+    creator = pct_value("creator_percent", "creator_percentage", "creator_holding_percent")
+    owner = pct_value("owner_percent", "owner_percentage", "owner_holding_percent")
+    top10 = pct_value("top10_holder_percent", "top10_holders_percent", "holders_percent")
+
+    for value, label, threshold in [
+        (creator, "creator concentration", 20),
+        (owner, "owner concentration", 20),
+        (top10, "top10 concentration", 60),
+    ]:
+        if value is not None and value >= threshold:
+            risk += 4 if value < threshold * 1.5 else 8
+            flags.append(f"{label} {value:.1f}%")
+
+    # LP / DEX structure where GoPlus exposes it.
+    is_dex = str(raw.get("is_in_dex", "1")).lower()
+    if is_dex in {"0", "false"}:
+        risk += 6
+        flags.append("not in recognised DEX")
+    lp_locked = raw.get("lp_holders")
+    if isinstance(lp_locked, list) and lp_locked:
+        # If every known LP holder is clearly unlocked, treat as a warning.
+        unlocked = 0
+        for holder in lp_locked:
+            if isinstance(holder, dict):
+                lock = holder.get("is_locked") or holder.get("locked")
+                if str(lock).lower() in {"0", "false", "none", ""}:
+                    unlocked += 1
+        if unlocked and unlocked == len(lp_locked):
+            risk += 6
+            flags.append("LP appears unlocked")
+
+    return min(20, risk), flags
 
 
 def fmt(p, sec, smart_bonus_value=0, ranked=None):
@@ -1086,6 +1200,34 @@ def historical_multiple():
         if len(out)>=20: break
     return out
 
+
+# Known infrastructure addresses can otherwise masquerade as "smart wallets".
+# This list is intentionally conservative; unknown contracts are not automatically
+# blacklisted because that would create false negatives.
+KNOWN_INFRA_WALLETS = {
+    # Ethereum / common EVM infrastructure examples.
+    "0x0000000000000000000000000000000000000000",
+    "0x000000000000000000000000000000000000dead",
+}
+
+def looks_like_wallet_address(wallet):
+    w = str(wallet or "").lower()
+    if not w:
+        return False
+    if w in KNOWN_INFRA_WALLETS:
+        return False
+    return True
+
+def wallet_is_seed_eligible(wallet, tx_count=0):
+    """Reject obvious infrastructure and extremely active bot-like addresses."""
+    if not looks_like_wallet_address(wallet):
+        return False
+    # A huge transfer count is much more likely to be infrastructure/bot activity
+    # than a useful independent early-wallet signal.
+    if tx_count and tx_count > 5000:
+        return False
+    return True
+
 def seed_evm_wallets_from_pool(chain, pool, token=None):
     """
     Historical seed for EVM. We ask Alchemy for ERC-20 transfers involving
@@ -1139,59 +1281,24 @@ def seed_evm_wallets_from_pool(chain, pool, token=None):
 
 def seed_historical_wallets(winners):
     """
-    Build a seed reputation using recent 5x+ pools.
-    This is a learning phase: it does not call these wallets 'smart' until
-    they repeat across multiple independent winners.
+    Historical wallet bootstrap is intentionally disabled by default.
+
+    The old implementation assigned a win to every address receiving tokens from
+    a historical pool. That contaminated the reputation database with late buyers,
+    routers, MEV and deployers. Historical winners are now used by the outcome
+    tracker/analytics layer, not as automatic smart-wallet wins.
+
+    Set ENABLE_HISTORICAL_WALLET_SEED=true only if a future, stricter indexer-backed
+    seed implementation is added.
     """
-    wallets=load_wallets()
-    seeded=0
+    if str(_CFG.get("ENABLE_HISTORICAL_WALLET_SEED", "")).lower() != "true":
+        return load_wallets(), 0
 
-    for w in winners:
-        chain=w["chain"]
-        pool=w["pool"]
-        buyers=[]
+    # Deliberately refuse the old unsafe seed path.
+    print("[Smart Wallet] Historical seed disabilitato: serve un indexer che identifichi "
+          "l'acquisto iniziale, non semplici transfer dal pool.")
+    return load_wallets(), 0
 
-        if chain=="solana" and HELIUS_API_KEY:
-            # Helius can parse address history for the pool.
-            txs=helius_transactions(pool, 1000)
-            for tx in txs:
-                if tx.get("transactionError"):
-                    continue
-                fee=(tx.get("feePayer") or "").strip()
-                if fee:
-                    buyers.append(fee)
-                if len(buyers)>=MAX_WALLETS_PER_TOKEN:
-                    break
-        elif chain in ALCHEMY_HOSTS and ALCHEMY_API_KEY:
-            buyers=seed_evm_wallets_from_pool(chain,pool)
-
-        if not buyers:
-            continue
-
-        # Weight only pools that really expanded.  A 10x peak is stronger
-        # evidence than a 5x peak.
-        mult=w["peak_mult"]
-        success_weight=2 if mult>=10 else 1
-
-        for wallet in buyers:
-            key=f"{chain}:{wallet}"
-            rec=wallets.setdefault(key,{
-                "chain":chain,"wallet":wallet,
-                "calls":0,"wins":0,"tokens":[],
-                "peak_mults":[],"seeded":True,"last_seen":0
-            })
-            token_id=f"pool:{pool}"
-            if token_id in rec.get("tokens",[]):
-                continue
-            rec["calls"]+=1
-            rec["wins"]+=success_weight
-            rec.setdefault("peak_mults",[]).append(round(mult,2))
-            rec["tokens"]=(rec.get("tokens",[])+[token_id])[-100:]
-            rec["last_seen"]=time.time()
-            seeded+=1
-
-    save_wallets(wallets)
-    return wallets, seeded
 
 def wallet_report(wallets):
     ranked=[]
@@ -1214,6 +1321,252 @@ def wallet_stats(wallets):
     wins=sum(int(r.get("wins",0)) for r in wallets.values())
     pending=sum(len(r.get("pending",[])) for r in wallets.values())
     return calls,wins,pending
+
+
+def _load_json_state(path, default):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, type(default)) else default
+    except Exception:
+        return default
+
+def _save_json_atomic(path, data):
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        print(f"[State] Impossibile salvare {os.path.basename(path)}: {e}")
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return False
+
+def _pair_snapshot(pair):
+    return {
+        "ts": time.time(),
+        "price": num(pair.get("priceUsd")),
+        "mc": num(pair.get("marketCap") or pair.get("fdv")),
+        "liq": num((pair.get("liquidity") or {}).get("usd")),
+        "volume_1h": num((pair.get("volume") or {}).get("h1")),
+        "volume_24h": num((pair.get("volume") or {}).get("h24")),
+        "p1": num((pair.get("priceChange") or {}).get("h1")),
+        "p24": num((pair.get("priceChange") or {}).get("h24")),
+    }
+
+def feature_snapshot(p):
+    tx = (p.get("txns") or {}).get("h1") or {}
+    buys = num(tx.get("buys")); sells = num(tx.get("sells"))
+    total = buys + sells
+    mc = num(p.get("marketCap") or p.get("fdv"))
+    liq = num((p.get("liquidity") or {}).get("usd"))
+    v1 = num((p.get("volume") or {}).get("h1"))
+    v24 = num((p.get("volume") or {}).get("h24"))
+    return {
+        "chain": str(p.get("chainId", "")),
+        "mc": mc, "liq": liq, "v1": v1, "v24": v24,
+        "vm": v24 / mc if mc else 0,
+        "vol_liq": v1 / liq if liq else 0,
+        "burst": num(p.get("_burst")),
+        "accel": num(p.get("_accel")),
+        "has_accel": bool(p.get("_has_accel_history")),
+        "buy_pressure": buys / total if total else 0,
+        "p1": num((p.get("priceChange") or {}).get("h1")),
+        "p6": num((p.get("priceChange") or {}).get("h6")),
+        "p24": num((p.get("priceChange") or {}).get("h24")),
+        "age_hours": age_hours(p),
+        "base_score": num(p.get("_score")),
+        "smart_bonus": num(p.get("_smart_bonus")),
+        "final_score": num(p.get("_final_score")),
+    }
+
+def register_alert_outcomes(alerts):
+    """Create immutable-at-entry records for every Telegram alert."""
+    data = _load_json_state(OUTCOME_FILE, [])
+    if not isinstance(data, list):
+        data = []
+    existing = {x.get("id") for x in data if isinstance(x, dict)}
+    now = time.time()
+    for p, sec, level in alerts:
+        pair = p.get("pairAddress")
+        if not pair:
+            continue
+        record_id = f"{p.get('chainId')}:{pair}:{int(now // 300)}"
+        if record_id in existing:
+            continue
+        snap = _pair_snapshot(p)
+        if snap["price"] <= 0 and snap["mc"] <= 0:
+            continue
+        rec = {
+            "id": record_id,
+            "pair": pair,
+            "chain": p.get("chainId"),
+            "token": (p.get("baseToken") or {}).get("address"),
+            "symbol": (p.get("baseToken") or {}).get("symbol"),
+            "level": level,
+            "created_at": now,
+            "entry": snap,
+            "features": feature_snapshot(p),
+            "outcomes": {},
+            "milestones": {"2x": None, "5x": None, "10x": None},
+            "rug_like": False,
+            "resolved": False,
+        }
+        data.append(rec)
+        existing.add(record_id)
+    data = data[-TRACK_MAX_RECORDS:]
+    _save_json_atomic(OUTCOME_FILE, data)
+    return data
+
+def _fetch_pair_now(chain, pair):
+    try:
+        data = get_json(f"{BASE}/latest/dex/pairs/{chain}/{pair}")
+        if isinstance(data, dict):
+            if isinstance(data.get("pairs"), list) and data["pairs"]:
+                return data["pairs"][0]
+            if isinstance(data.get("pair"), dict):
+                return data["pair"]
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+def update_alert_outcomes():
+    """Update tracked alerts with current market data and immutable milestones."""
+    data = _load_json_state(OUTCOME_FILE, [])
+    if not data:
+        return data
+    now = time.time()
+    unresolved = [r for r in data if not r.get("resolved")]
+    # Oldest first, but cap network work per scan.
+    unresolved = sorted(unresolved, key=lambda r: r.get("created_at", now))[:TRACK_UPDATE_LIMIT]
+    by_id = {r.get("id"): r for r in data}
+    for rec in unresolved:
+        age_h = max(0, (now - num(rec.get("created_at"))) / 3600)
+        if age_h < 0.05:
+            continue
+        current = _fetch_pair_now(rec.get("chain"), rec.get("pair"))
+        if not current:
+            continue
+        snap = _pair_snapshot(current)
+        rec.setdefault("samples", []).append(snap)
+        entry_price = num(rec.get("entry", {}).get("price"))
+        entry_mc = num(rec.get("entry", {}).get("mc"))
+        current_price = snap["price"]
+        current_mc = snap["mc"]
+        mult_price = current_price / entry_price if entry_price > 0 else 0
+        mult_mc = current_mc / entry_mc if entry_mc > 0 else 0
+        mult = max(mult_price, mult_mc)
+
+        # Fixed evaluation horizons. We record the first observation available
+        # after each horizon; the scanner therefore learns from comparable T+1h,
+        # T+6h, T+24h and T+7d snapshots rather than from hindsight.
+        rec.setdefault("outcomes", {})
+        for label, horizon in (("1h",1),("6h",6),("24h",24),("7d",168)):
+            if age_h >= horizon and label not in rec["outcomes"]:
+                rec["outcomes"][label] = {
+                    "ts": now,
+                    "price_mult": round(mult_price,4),
+                    "mc_mult": round(mult_mc,4),
+                    "multiple": round(mult,4),
+                    "price": current_price,
+                    "mc": current_mc,
+                    "liq": snap["liq"],
+                }
+
+        for label, threshold in (("2x",2),("5x",5),("10x",10)):
+            if rec.get("milestones", {}).get(label) is None and mult >= threshold:
+                rec["milestones"][label] = now
+        # Detect severe collapse as a useful outcome label, not as proof of a rug.
+        if entry_liq := num(rec.get("entry", {}).get("liq")):
+            if snap["liq"] > 0 and snap["liq"] < entry_liq * 0.15:
+                rec["rug_like"] = True
+        rec["last_update"] = now
+        # Resolve at 7d or earlier if 10x was reached.
+        if age_h >= 168 or rec["milestones"].get("10x") is not None:
+            rec["resolved"] = True
+            rec["resolved_at"] = now
+    _save_json_atomic(OUTCOME_FILE, data)
+    return data
+
+def outcome_analytics(data):
+    """Print robust outcome statistics and feature lifts. Never invents labels."""
+    resolved = [r for r in data if r.get("resolved") and isinstance(r.get("features"), dict)]
+    if not resolved:
+        return {"resolved": 0}
+    def rate(label):
+        return sum(1 for r in resolved if r.get("milestones", {}).get(label)) / len(resolved)
+    stats = {
+        "resolved": len(resolved),
+        "2x_rate": rate("2x"), "5x_rate": rate("5x"), "10x_rate": rate("10x"),
+        "rug_like_rate": sum(bool(r.get("rug_like")) for r in resolved)/len(resolved),
+    }
+    # Feature bins chosen for interpretability, not curve fitting.
+    bins = {
+        "base_score": [(0,59),(60,69),(70,79),(80,89),(90,100)],
+        "burst": [(0,1.24),(1.25,1.99),(2,2.99),(3,5.99),(6,9.99),(10,19.99),(20,999)],
+        "vol_liq": [(0,1),(1,3),(3,5),(5,10),(10,15),(15,25),(25,999)],
+        "buy_pressure": [(0,.49),(.50,.54),(.55,.59),(.60,.67),(.68,1)],
+        "p1": [(-999,-10),(-9.99,2.99),(3,7.99),(8,19.99),(20,40),(40.01,999)],
+        "age_hours": [(0,3.99),(4,11.99),(12,23.99),(24,71.99),(72,9999)],
+    }
+    lifts = {}
+    baseline = rate("5x")
+    for feature, ranges in bins.items():
+        vals=[]
+        for lo,hi in ranges:
+            group=[r for r in resolved if lo <= num(r["features"].get(feature)) <= hi]
+            if len(group) < 10:
+                continue
+            wr=sum(1 for r in group if r.get("milestones",{}).get("5x"))/len(group)
+            lift=(wr/baseline) if baseline > 0 else 0
+            vals.append({"range":[lo,hi],"n":len(group),"5x_rate":wr,"lift":lift})
+        lifts[feature]=vals
+    stats["lifts"]=lifts
+    _save_json_atomic(ANALYTICS_FILE, stats)
+    return stats
+
+def adaptive_learning_bonus(p, data):
+    """
+    Small, bounded empirical adjustment. It activates only after enough resolved
+    observations exist and only uses bins with >=10 observations. This prevents
+    the historical dataset from becoming an overfit trading oracle.
+    """
+    resolved=[r for r in data if r.get("resolved") and isinstance(r.get("features"),dict)]
+    if len(resolved) < LEARNING_MIN_RESOLVED:
+        return 0.0, "learning-off"
+    baseline=sum(1 for r in resolved if r.get("milestones",{}).get("5x"))/len(resolved)
+    if baseline <= 0:
+        return 0.0, "learning-off"
+    f=feature_snapshot(p)
+    specs={
+        "base_score":[(0,59),(60,69),(70,79),(80,89),(90,100)],
+        "burst":[(0,1.24),(1.25,1.99),(2,2.99),(3,5.99),(6,9.99),(10,19.99),(20,999)],
+        "vol_liq":[(0,1),(1,3),(3,5),(5,10),(10,15),(15,25),(25,999)],
+        "buy_pressure":[(0,.49),(.50,.54),(.55,.59),(.60,.67),(.68,1)],
+        "p1":[(-999,-10),(-9.99,2.99),(3,7.99),(8,19.99),(20,40),(40.01,999)],
+        "age_hours":[(0,3.99),(4,11.99),(12,23.99),(24,71.99),(72,9999)],
+    }
+    score=0.0; used=0
+    for feature,ranges in specs.items():
+        value=num(f.get(feature))
+        for lo,hi in ranges:
+            if not (lo <= value <= hi): continue
+            group=[r for r in resolved if lo <= num(r["features"].get(feature)) <= hi]
+            if len(group) < 10: break
+            wr=sum(1 for r in group if r.get("milestones",{}).get("5x"))/len(group)
+            lift=wr/baseline
+            if ADAPTIVE_MIN_LIFT <= lift <= ADAPTIVE_MAX_LIFT:
+                score += min(2.0, math.log(lift, 2))
+            elif 0 < lift < (1/ADAPTIVE_MIN_LIFT):
+                score -= min(2.0, math.log(1/lift, 2))
+            used += 1
+            break
+    return max(-ADAPTIVE_BONUS_MAX,min(ADAPTIVE_BONUS_MAX,round(score,1))), f"learning-on/{used}"
 
 def _load_telegram_alerts():
     try:
@@ -1348,6 +1701,7 @@ def build_telegram_alert(p, sec, smart_bonus_value, ranked, alert_level="INTERES
         "📊 SETUP",
         f"  🎯 Score: {score}/100  |  Base: {base_score}/100",
         f"  ⚡ Burst: {burst:.1f}x  |  Accel: {accel}",
+        f"  🧠 Smart: +{smart_bonus_value}  |  Learning: {num(p.get('_adaptive_bonus',0)):+.1f}",
         f"  📈 Buy pressure: {bp:.1f}% ({buys} buy / {sells} sell)",
         f"  📈 Price 1H: {num(pc.get('h1')):+.1f}%",
         "",
@@ -1411,8 +1765,8 @@ def print_trade_plan():
 def main():
     enable_ansi()
     print(c("═"*80, CYAN))
-    print(c("  MEMECOIN SCANNER V10", CYAN, True))
-    print(c("  SMART WALLET  +  EARLY SCORE  +  BURST  +  GOPLUS  +  TERMINAL EXIT", WHITE))
+    print(c("  MEMECOIN SCANNER V11", CYAN, True))
+    print(c("  SMART WALLET  +  EARLY SCORE  +  LEARNING  +  GOPLUS  +  TERMINAL EXIT", WHITE))
     print(c("═"*80, CYAN))
 
     print(c("\n[1/3] Cerco pool recenti e storico OHLCV...",BLUE,True))
@@ -1458,11 +1812,39 @@ def main():
 
     evidence, wallets = update_smart_wallets(rows)
 
+    # Update previously registered alerts before using historical learning.
+    tracked_data = update_alert_outcomes()
+    analytics = outcome_analytics(tracked_data)
+    if analytics.get("resolved"):
+        print(
+            f"[LEARNING] {analytics['resolved']} alert risolti | "
+            f"2x {analytics['2x_rate']*100:.1f}% | "
+            f"5x {analytics['5x_rate']*100:.1f}% | "
+            f"10x {analytics['10x_rate']*100:.1f}% | "
+            f"rug-like {analytics['rug_like_rate']*100:.1f}%"
+        )
+    else:
+        print(f"[LEARNING] Dataset in costruzione: servono almeno {LEARNING_MIN_RESOLVED} alert risolti.")
+
+    if analytics.get("lifts"):
+        for feature, entries in analytics["lifts"].items():
+            best = max(entries, key=lambda x: x.get("lift", 0), default=None)
+            if best and best.get("lift", 0) >= ADAPTIVE_MIN_LIFT:
+                lo, hi = best["range"]
+                print(
+                    f"[LEARNING] {feature}: range {lo}–{hi} | "
+                    f"n={best['n']} | 5x={best['5x_rate']*100:.1f}% | "
+                    f"lift={best['lift']:.2f}x"
+                )
+
     for p in rows:
         bonus, ranked = smart_bonus(p, evidence)
         p["_smart_bonus"]=bonus
         p["_smart_ranked"]=ranked
-        p["_final_score"]=min(100,round(p["_score"]+bonus))
+        adaptive, learning_state = adaptive_learning_bonus(p, tracked_data)
+        p["_adaptive_bonus"] = adaptive
+        p["_learning_state"] = learning_state
+        p["_final_score"]=min(100,max(0,round(p["_score"]+bonus+adaptive)))
 
     rows.sort(key=lambda x:(x["_final_score"],x["_accel"]),reverse=True)
 
@@ -1470,9 +1852,18 @@ def main():
         sec=security(p)
         p["_security_result"] = sec
         p["_security_status"] = sec.get("status", "UNVERIFIED")
-        print(c(f"\n#{i}  EARLY FINAL  {p['_final_score']}/100  •  SMART +{p['_smart_bonus']}",score_color(p['_final_score']),True))
+        quality_penalty = num(sec.get("quality_penalty"))
+        if quality_penalty:
+            p["_final_score"] = max(0, p["_final_score"] - round(quality_penalty))
+        print(c(
+            f"\n#{i}  EARLY FINAL  {p['_final_score']}/100  •  "
+            f"SMART +{p['_smart_bonus']} • LEARN {p.get('_adaptive_bonus',0):+.1f}",
+            score_color(p['_final_score']), True
+        ))
         print(fmt(p,sec,p["_smart_bonus"],p["_smart_ranked"]))
-        if p["_final_score"] >= 60 and sec["status"] == "PASS":
+        if sec.get("quality_flags"):
+            print("  Structural risk:", " | ".join(sec["quality_flags"]))
+        if p["_final_score"] >= 60 and sec["status"] == "PASS" and quality_penalty < 12:
             print_trade_plan()
 
     # TELEGRAM ALERT ENGINE
@@ -1510,9 +1901,14 @@ def main():
             print("  → NO ALERT: Security non PASS")
             continue
 
-        # Evitiamo token già esplosi. Un +80% nell'ora o +180% nelle 24h
+        quality_penalty = num(sec.get("quality_penalty"))
+        if quality_penalty >= 12:
+            print("  → NO ALERT: concentrazione/struttura troppo rischiosa")
+            continue
+
+        # Evitiamo token già esplosi. Un +60% nell'ora o +150% nelle 24h
         # è il limite massimo per l'alert automatico.
-        if p1 > 80 or p24 > 180:
+        if p1 > ALERT_MAX_P1 or p24 > ALERT_MAX_P24:
             print("  → NO ALERT: token troppo esteso")
             continue
 
@@ -1574,6 +1970,9 @@ def main():
         alerts_to_send[p.get("pairAddress")] = (p, sec, level)
 
     if alerts_to_send:
+        # Persist the exact T0 snapshot before sending. The outcome engine later
+        # measures 1h/6h/24h/7d and 2x/5x/10x from this immutable entry.
+        register_alert_outcomes(list(alerts_to_send.values()))
         print(f"\n[Telegram] {len(alerts_to_send)} candidato/i selezionato/i.")
 
         for pair_address, (p, sec, level) in sorted(
@@ -1597,7 +1996,8 @@ def main():
             print_trade_plan()
             print(c("═"*80, GREEN, True))
 
-            alert_text = build_telegram_alert(                p,
+            alert_text = build_telegram_alert(
+                p,
                 sec,
                 p["_smart_bonus"],
                 p["_smart_ranked"],
