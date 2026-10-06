@@ -426,7 +426,7 @@ def discover():
     except:
         state = {}
 
-    rows, newstate, seen = [], {}, set()
+    rows, newstate, seen = [], {"_positions": state.get("_positions", {})}, set()
 
     for p in pairs:
         chain = str(p.get("chainId","")).lower()
@@ -1206,18 +1206,27 @@ def adaptive_learning_bonus(p, data):
 
 def _load_positions():
     try:
-        with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
+        positions = data.get("_positions", {}) if isinstance(data, dict) else {}
+        return positions if isinstance(positions, dict) else {}
     except Exception:
         return {}
 
 def _save_positions(data):
     try:
-        tmp = POSITIONS_FILE + ".tmp"
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                state = json.load(f)
+            if not isinstance(state, dict):
+                state = {}
+        except Exception:
+            state = {}
+        state["_positions"] = data if isinstance(data, dict) else {}
+        tmp = STATE_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(tmp and data, f, indent=2)
-        os.replace(tmp, POSITIONS_FILE)
+            json.dump(state, f, indent=2)
+        os.replace(tmp, STATE_FILE)
     except Exception as e:
         print(f"[TRADING] save positions error: {e}")
 
