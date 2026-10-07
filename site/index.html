@@ -34,7 +34,8 @@
 const API="https://api.dexscreener.com";
 const PROFILE_LIMIT=150;
 const BATCH=25;
-const REFRESH_MS=30000;
+const DISCOVERY_MS=30000;
+const MONITOR_MS=3000;
 const STATE_KEY="memecoin_scanner_v1";
 let allPairs=[];
 let currentFilter="all";
@@ -108,20 +109,30 @@ function render(){
  }).join("");
 }
 
-async function scan(){
- document.getElementById("status").textContent="Aggiornamento DexScreener…";
+async function dedupeAndRank(pairs,old){
+ const filtered=pairs.filter(passes).map(function(p){return enrich(p,old)}).filter(classify);
+ filtered.sort(function(a,b){return b._m.score-a._m.score});
+ const byToken=new Map();
+ for(const p of filtered){
+  const k=p.baseToken?.address||p.pairAddress;
+  if(!byToken.has(k))byToken.set(k,p);
+ }
+ return [...byToken.values()];
+}
+
+async function discoverScan(){
+ document.getElementById("status").textContent="Discovery DexScreener…";
  try{
-  const old=previous(),pairs=await discover(),filtered=pairs.filter(passes).map(function(p){return enrich(p,old)}).filter(classify);
-  const byToken=new Map();
-  filtered.sort(function(a,b){return b._m.score-a._m.score});
-  for(const p of filtered){const k=p.baseToken?.address||p.pairAddress;if(!byToken.has(k))byToken.set(k,p)}
-  allPairs=[...byToken.values()];
-  const next={};for(const p of allPairs)next[p.pairAddress]={v1:n(p.volume&&p.volume.h1),ts:Date.now()};savePrevious(next);
+  const old=previous(),pairs=await discover();
+  allPairs=await dedupeAndRank(pairs,old);
+  const next={};
+  for(const p of allPairs) next[p.pairAddress]={v1:n(p.volume&&p.volume.h1),ts:Date.now()};
+  savePrevious(next);
   document.getElementById("pairs").textContent=pairs.length;
   document.getElementById("candidates").textContent=allPairs.length;
   document.getElementById("strong").textContent=allPairs.filter(function(p){return p._level==="STRONG"}).length;
   document.getElementById("refresh").textContent=new Date().toLocaleTimeString("it-IT");
-  document.getElementById("status").textContent="Live · DexScreener";
+  document.getElementById("status").textContent="Live · discovery 30s · monitor 3s";
   render();
  }catch(e){
   document.getElementById("status").textContent="Errore DexScreener";
@@ -129,12 +140,37 @@ async function scan(){
  }
 }
 
+async function monitorScan(){
+ if(!allPairs.length)return;
+ const addresses=[...new Set(allPairs.map(function(p){return p.baseToken?.address}).filter(Boolean))];
+ if(!addresses.length)return;
+ try{
+  const old=previous();
+  const chunks=[];
+  for(let i=0;i<addresses.length;i+=BATCH)chunks.push(addresses.slice(i,i+BATCH));
+  const responses=await Promise.all(chunks.map(function(chunk){
+   return getJSON(API+"/tokens/v1/solana/"+chunk.join(","));
+  }));
+  const livePairs=responses.flat().filter(function(p){return String(p.chainId||"").toLowerCase()==="solana"});
+  const previousCount=allPairs.length;
+  const updated=await dedupeAndRank(livePairs,old);
+  allPairs=updated;
+  document.getElementById("candidates").textContent=allPairs.length;
+  document.getElementById("strong").textContent=allPairs.filter(function(p){return p._level==="STRONG"}).length;
+  document.getElementById("refresh").textContent=new Date().toLocaleTimeString("it-IT");
+  document.getElementById("status").textContent="Live · dati ogni 3s · discovery ogni 30s";
+  render();
+ }catch(e){
+  document.getElementById("status").textContent="Live · monitor in pausa";
+ }
+}
+
 document.querySelectorAll(".filter").forEach(function(b){b.onclick=function(){document.querySelectorAll(".filter").forEach(function(x){x.classList.remove("active")});b.classList.add("active");currentFilter=b.dataset.filter;render()}});
 document.getElementById("search").oninput=function(e){currentQuery=e.target.value;render()};
 
-
-scan();
-setInterval(scan,REFRESH_MS);
+discoverScan();
+setInterval(discoverScan,DISCOVERY_MS);
+setInterval(monitorScan,MONITOR_MS);
 </script>
 </body>
 </html>
