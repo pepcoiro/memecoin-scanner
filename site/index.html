@@ -61,6 +61,9 @@ const NOTIFY_STATE_KEY="memecoin_scanner_notifications_v1";
 let notificationsEnabled=false;
 let notificationsArmed=false;
 const knownLevels=new Map();
+const strongSignals=new Map();
+const STRONG_ENTER_SCORE=75;
+const STRONG_EXIT_SCORE=65;
 
 function n(x){const v=Number(x);return Number.isFinite(v)?v:0}
 function money(x){return new Intl.NumberFormat("it-IT",{notation:"compact",maximumFractionDigits:1}).format(n(x))}
@@ -101,6 +104,7 @@ function checkStrongNotifications(pairs){
   knownLevels.set(address,level);
  }
  for(const address of [...knownLevels.keys()])if(!present.has(address))knownLevels.delete(address);
+ for(const address of [...strongSignals.keys()])if(!present.has(address))strongSignals.delete(address);
  notificationsArmed=true;
 }
 function enableNotifications(){
@@ -138,7 +142,42 @@ function score(p,old){
  if(old[p.pairAddress]&&n(old[p.pairAddress].v1)){has=true;acc=v1/n(old[p.pairAddress].v1);if(acc>=3)s+=7;else if(acc>=2)s+=5;else if(acc>=1.5)s+=3;else if(acc<.65)s-=2}
  return {score:Math.max(0,Math.min(100,Math.round(s))),burst:bu,accel:acc,hasAccel:has,bp:pressure};
 }
-function enrich(p,old){const m=score(p,old),p1=n(p.priceChange&&p.priceChange.h1),p24=n(p.priceChange&&p.priceChange.h24);let level="";if(m.score>=75&&(m.burst>=2||m.hasAccel))level="STRONG";else if(m.score>=60&&(m.burst>=1.5||m.bp>=.55))level="INTERESTING";else if(m.score>=45&&(m.burst>=1.0||m.bp>=.48))level="WATCH";else if(m.score>=35&&(p24>60||p1>30||m.burst>=1.0||m.bp>=.48))level="WATCH";p._m=m;p._level=level;return p}
+function enrich(p,old){
+ const m=score(p,old),p1=n(p.priceChange&&p.priceChange.h1),p24=n(p.priceChange&&p.priceChange.h24);
+ let rawLevel="";
+ if(m.score>=STRONG_ENTER_SCORE&&(m.burst>=2||m.hasAccel))rawLevel="STRONG";
+ else if(m.score>=60&&(m.burst>=1.5||m.bp>=.55))rawLevel="INTERESTING";
+ else if(m.score>=45&&(m.burst>=1.0||m.bp>=.48))rawLevel="WATCH";
+ else if(m.score>=35&&(p24>60||p1>30||m.burst>=1.0||m.bp>=.48))rawLevel="WATCH";
+
+ const address=p.baseToken?.address;
+ let level=rawLevel;
+ if(address){
+  const state=strongSignals.get(address);
+  if(rawLevel==="STRONG"){
+   if(!state||state.level!=="STRONG"){
+    strongSignals.set(address,{level:"STRONG",startedAt:Date.now(),entryScore:m.score,entryPrice:n(p.priceUsd),peakScore:m.score});
+   }else{
+    state.level="STRONG";
+    state.peakScore=Math.max(n(state.peakScore),m.score);
+   }
+   level="STRONG";
+  }else if(state&&state.level==="STRONG"&&m.score>=STRONG_EXIT_SCORE){
+   state.peakScore=Math.max(n(state.peakScore),m.score);
+   level="STRONG";
+  }else if(state&&state.level==="STRONG"){
+   state.level=rawLevel;
+   state.exitedAt=Date.now();
+   level=rawLevel;
+  }
+ }
+ p._m=m;
+ p._rawLevel=rawLevel;
+ p._level=level;
+ const signal=address?strongSignals.get(address):null;
+ if(signal&&signal.level==="STRONG")p._signal=signal;
+ return p;
+}
 function passes(p){const liq=n(p.liquidity&&p.liquidity.usd),mc=n(p.marketCap||p.fdv),v24=n(p.volume&&p.volume.h24);return liq>=20000&&mc>=20000&&mc<=10000000&&v24>=20000}
 function classify(p){const p1=n(p.priceChange&&p.priceChange.h1),p24=n(p.priceChange&&p.priceChange.h24),addr=p.baseToken?.address;return !(p1<=-40||p24<=-70)&&(!!p._level||birthCandidates.has(addr))}
 
@@ -164,8 +203,9 @@ function render(){
  if(!list.length){document.getElementById("grid").innerHTML='<div class="empty">Nessun token corrisponde ai filtri.</div>';return}
  document.getElementById("grid").innerHTML=list.map(function(p){
   const t=p.baseToken||{},m=p._m||{},a=age(p),hot=p._level==="STRONG";
+  const signalNote=hot&&p._signal?"STRONG @ "+n(p._signal.entryScore):"score";
   const initials=(t.symbol||"?").slice(0,2).toUpperCase();
-  return '<article class="card'+(hot?" hot":"")+'"><div class="head"><div class="token"><div class="avatar">'+esc(initials)+'</div><div><div class="sym">'+esc(t.symbol||"?")+'</div><div class="name" title="'+esc(t.name||"")+'">'+esc(t.name||"")+'</div></div></div><div class="score"><b>'+m.score+'</b><small>score</small></div></div>'+
+  return '<article class="card'+(hot?" hot":"")+'"><div class="head"><div class="token"><div class="avatar">'+esc(initials)+'</div><div><div class="sym">'+esc(t.symbol||"?")+'</div><div class="name" title="'+esc(t.name||"")+'">'+esc(t.name||"")+'</div></div></div><div class="score"><b>'+m.score+'</b><small>'+esc(signalNote)+'</small></div></div>'+
   '<div class="badges">'+(p._level?'<span class="badge '+(hot?"red":(p._level==="WATCH"?"yellow":"green"))+'">'+(hot?"🔥 STRONG":(p._level==="WATCH"?"🟡 WATCH":"🟢 INTERESTING"))+'</span>':'')+(p._birth?'<span class="badge green">🆕 '+(p._birth.source==="pumpfun"?"PUMP.FUN":"RAYDIUM")+'</span>':'')+(n(p.priceChange&&p.priceChange.h1)>60||n(p.priceChange&&p.priceChange.h24)>150?'<span class="badge red">🔥 HOT</span>':'')+(a<=24?'<span class="badge yellow">🆕 '+a.toFixed(1)+'h</span>':'')+'<span class="badge">'+esc(p.dexId||"?")+'</span></div>'+
   '<div class="metrics"><div class="metric"><span>Liquidity</span><strong>$'+money(p.liquidity&&p.liquidity.usd)+'</strong></div><div class="metric"><span>Market Cap</span><strong>$'+money(p.marketCap||p.fdv)+'</strong></div><div class="metric"><span>Vol 1h</span><strong>$'+money(p.volume&&p.volume.h1)+'</strong></div></div>'+
   '<div class="rows"><div class="row"><span>Volume burst</span><b>'+m.burst.toFixed(2)+'x</b></div><div class="row"><span>Buy pressure</span><b>'+(m.bp*100).toFixed(1)+'%</b></div><div class="row"><span>Accelerazione</span><b>'+(m.hasAccel?m.accel.toFixed(2)+"x":"N/D")+'</b></div><div class="row"><span>Price 1h / 24h</span><b>'+pct(p.priceChange&&p.priceChange.h1)+' / '+pct(p.priceChange&&p.priceChange.h24)+'</b></div></div>'+
