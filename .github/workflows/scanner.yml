@@ -2,9 +2,13 @@ name: Memecoin Scanner
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: memecoin-scanner
@@ -13,6 +17,9 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Checkout
@@ -33,6 +40,9 @@ jobs:
           restore-keys: |
             scanner-state-${{ github.ref_name }}-
 
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v5
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -41,9 +51,16 @@ jobs:
       - name: Run scanner
         env:
           HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scanner.py
+
+      - name: Upload dashboard
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+      - name: Deploy dashboard
+        id: deployment
+        uses: actions/deploy-pages@v4
 
       - name: Save scanner state
         uses: actions/cache/save@v4
