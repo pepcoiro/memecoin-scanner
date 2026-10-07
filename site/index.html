@@ -215,7 +215,46 @@ function applySecurityScore(p,onchain){
 function passes(p){const liq=n(p.liquidity&&p.liquidity.usd),mc=n(p.marketCap||p.fdv),v24=n(p.volume&&p.volume.h24);return liq>=20000&&mc>=20000&&mc<=10000000&&v24>=20000}
 function classify(p){const p1=n(p.priceChange&&p.priceChange.h1),p24=n(p.priceChange&&p.priceChange.h24),addr=p.baseToken?.address;return !(p1<=-40||p24<=-70)&&(!!p._level||!p._securityReady||birthCandidates.has(addr))}
 
-async function getJSON(url){const r=await fetch(url,{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);return r.json()}
+async function getJSON(url){
+ const r=await fetch(url,{cache:"no-store"});
+ if(!r.ok)throw new Error("HTTP "+r.status);
+ return r.json();
+}
+async function getJSONRetry(url,attempts){
+ let last=null;
+ for(let i=0;i<attempts;i++){
+  try{return await getJSON(url)}
+  catch(e){
+   last=e;
+   if(i<attempts-1)await new Promise(function(resolve){setTimeout(resolve,350*(i+1))});
+  }
+ }
+ throw last||new Error("HTTP error");
+}
+async function getTokenData(addresses){
+ const unique=[...new Set((addresses||[]).filter(Boolean))];
+ const out=[];
+ async function fetchChunk(chunk){
+  if(!chunk.length)return;
+  try{
+   const data=await getJSONRetry(API+"/tokens/v1/solana/"+chunk.join(","),3);
+   if(Array.isArray(data))out.push(...data);
+   return;
+  }catch(e){}
+  if(chunk.length===1){
+   try{
+    const data=await getJSONRetry(API+"/token-pairs/v1/solana/"+encodeURIComponent(chunk[0]),3);
+    if(Array.isArray(data))out.push(...data);
+   }catch(e){}
+   return;
+  }
+  const mid=Math.ceil(chunk.length/2);
+  await fetchChunk(chunk.slice(0,mid));
+  await fetchChunk(chunk.slice(mid));
+ }
+ for(let i=0;i<unique.length;i+=BATCH)await fetchChunk(unique.slice(i,i+BATCH));
+ return out.filter(function(p){return String(p.chainId||"").toLowerCase()==="solana"});
+}
 async function discover(){
  const results=await Promise.all([
   getJSON(API+"/token-profiles/latest/v1").catch(function(){return []}),
@@ -225,9 +264,7 @@ async function discover(){
  const boosts=results[1]||[];
  const addresses=[...profiles,...boosts].filter(function(x){return String(x.chainId||"").toLowerCase()==="solana"&&x.tokenAddress}).map(function(x){return x.tokenAddress});
  const unique=[...new Set(addresses)].slice(0,PROFILE_LIMIT);
- const chunks=[];for(let i=0;i<unique.length;i+=BATCH)chunks.push(unique.slice(i,i+BATCH));
- const responses=await Promise.all(chunks.map(function(c){return getJSON(API+"/tokens/v1/solana/"+c.join(","))}));
- const pairs=responses.flat().filter(function(p){return String(p.chainId||"").toLowerCase()==="solana"});
+ const pairs=await getTokenData(unique);
  const seen=new Set(),dedup=[];for(const p of pairs){if(!p.pairAddress||seen.has(p.pairAddress))continue;seen.add(p.pairAddress);dedup.push(p)}
  return dedup;
 }
@@ -266,16 +303,9 @@ function rankRealtimePairs(){
 async function refreshRealtimeAddresses(addresses){
  const unique=[...new Set(addresses.filter(Boolean))];
  if(!unique.length)return;
- const chunks=[];
- for(let i=0;i<unique.length;i+=BATCH)chunks.push(unique.slice(i,i+BATCH));
  try{
   const old=previous();
-  const responses=await Promise.all(chunks.map(function(chunk){
-   return getJSON(API+"/tokens/v1/solana/"+chunk.join(","));
-  }));
-  const livePairs=responses.flat().filter(function(p){
-   return String(p.chainId||"").toLowerCase()==="solana";
-  });
+  const livePairs=await getTokenData(unique);
   const liveByToken=new Map();
   for(const p of livePairs){
    const addr=p.baseToken?.address;
@@ -609,15 +639,8 @@ async function resolveBirthCandidates(){
  });
  if(!pending.length)return;
  const addresses=pending.map(function(x){return x.mint});
- const chunks=[];
- for(let i=0;i<addresses.length;i+=BATCH)chunks.push(addresses.slice(i,i+BATCH));
  try{
-  const responses=await Promise.all(chunks.map(function(chunk){
-   return getJSON(API+"/tokens/v1/solana/"+chunk.join(","));
-  }));
-  const livePairs=responses.flat().filter(function(p){
-   return String(p.chainId||"").toLowerCase()==="solana";
-  });
+  const livePairs=await getTokenData(addresses);
   const old=previous();
   const found=new Map();
   for(const p of livePairs){
