@@ -4,6 +4,7 @@ BASE="https://api.dexscreener.com"; TIMEOUT=20
 DIR=os.path.dirname(os.path.abspath(__file__))
 STATE=os.path.join(DIR,"scanner_state.json"); TGSTATE=os.path.join(DIR,"telegram_alert_state.json")
 CHAIN="solana"; MIN_LIQ=20000; MIN_MC=20000; MAX_MC=10000000; MIN_VOL24=20000; TOP_N=15
+RPC_BATCH_SIZE=8; RPC_RETRIES=4
 BOT=os.getenv("TELEGRAM_BOT_TOKEN","").strip(); CHAT=os.getenv("TELEGRAM_CHAT_ID","").strip()
 HELIUS_API_KEY=os.getenv("HELIUS_API_KEY","").strip()
 SOLANA_RPC=f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else ""
@@ -18,7 +19,10 @@ def get(url,**kw):
     for i in range(3):
         try:
             r=S.get(url,timeout=TIMEOUT,**kw)
-            if r.status_code==429: time.sleep(1.5*(i+1)); continue
+            if r.status_code==429:
+                retry_after=n(r.headers.get("Retry-After"))
+                time.sleep(retry_after if retry_after>0 else 1.5*(i+1))
+                continue
             r.raise_for_status(); return r.json()
         except Exception as e:
             last=e
@@ -150,24 +154,52 @@ def discover():
 def rpc_batch(calls):
     if not SOLANA_RPC:
         raise RuntimeError("HELIUS_API_KEY non configurata: impossibile usare Solana RPC")
-    try:
-        print("[ONCHAIN] RPC: Helius")
-        r=S.post(SOLANA_RPC,json=[
-            {"jsonrpc":"2.0","id":i+1,"method":m,"params":p}
-            for i,(m,p) in enumerate(calls)
-        ],headers={"Content-Type":"application/json"},timeout=TIMEOUT)
-        r.raise_for_status()
-        return {x.get("id"):x for x in r.json() if isinstance(x,dict)}
-    except Exception as e:
-        print(f"[ONCHAIN] RPC ERROR: {type(e).__name__}: {e}")
-        return {}
+    out={}
+    print(f"[ONCHAIN] RPC: Helius | calls={len(calls)} | batch={RPC_BATCH_SIZE}")
+    for start in range(0,len(calls),RPC_BATCH_SIZE):
+        chunk=calls[start:start+RPC_BATCH_SIZE]
+        payload=[
+            {"jsonrpc":"2.0","id":start+i+1,"method":m,"params":p}
+            for i,(m,p) in enumerate(chunk)
+        ]
+        success=False
+        for attempt in range(RPC_RETRIES):
+            try:
+                r=S.post(
+                    SOLANA_RPC,
+                    json=payload,
+                    headers={"Content-Type":"application/json"},
+                    timeout=TIMEOUT
+                )
+                if r.status_code==429:
+                    retry_after=n(r.headers.get("Retry-After"))
+                    wait=retry_after if retry_after>0 else min(2**attempt,12)
+                    print(f"[ONCHAIN] RPC 429 | batch={start//RPC_BATCH_SIZE+1} | retry in {wait:.1f}s")
+                    time.sleep(wait)
+                    continue
+                r.raise_for_status()
+                body=r.json()
+                if not isinstance(body,list):
+                    raise ValueError("Risposta RPC non valida")
+                for x in body:
+                    if isinstance(x,dict) and x.get("id") is not None:
+                        out[x["id"]]=x
+                success=True
+                break
+            except Exception as e:
+                print(f"[ONCHAIN] RPC ERROR | batch={start//RPC_BATCH_SIZE+1} attempt={attempt+1}/{RPC_RETRIES}: {type(e).__name__}: {e}")
+                if attempt<RPC_RETRIES-1:
+                    time.sleep(min(.8*(2**attempt),8))
+        if not success:
+            print(f"[ONCHAIN] RPC BATCH FALLITO | batch={start//RPC_BATCH_SIZE+1}")
+    return out
 
 def security_batch(rows):
     addrs=[]
     for p in rows:
         addr=(p.get("baseToken") or {}).get("address")
         if addr and addr not in addrs:addrs.append(addr)
-    out={a:{"status":"UNVERIFIED","bad":[]} for a in addrs}
+    out={a:{"status":"UNVERIFIED","bad":[],"reason":"not_checked"} for a in addrs}
     if not addrs:return out
 
     calls=[]
@@ -178,11 +210,23 @@ def security_batch(rows):
     data=rpc_batch(calls)
 
     for i,addr in enumerate(addrs):
-        mint=(data.get(i+1) or {}).get("result",{}).get("value")
-        largest=(data.get(len(addrs)+i+1) or {}).get("result",{}).get("value") or []
+        mint_response=data.get(i+1)
+        largest_response=data.get(len(addrs)+i+1)
+        if not mint_response or "error" in mint_response:
+            out[addr]={"status":"UNVERIFIED","bad":[],"reason":"rpc_error"}
+            print(f"[ONCHAIN] {addr} => UNVERIFIED rpc_error")
+            continue
+        if not largest_response or "error" in largest_response:
+            out[addr]={"status":"UNVERIFIED","bad":[],"reason":"largest_accounts_unavailable"}
+            print(f"[ONCHAIN] {addr} => UNVERIFIED largest_accounts_unavailable")
+            continue
+        mint=mint_response.get("result",{}).get("value")
+        largest=largest_response.get("result",{}).get("value") or []
         try:
             info=((mint or {}).get("data") or {}).get("parsed",{}).get("info",{})
             if not info:
+                out[addr]={"status":"UNVERIFIED","bad":[],"reason":"invalid_mint_data"}
+                print(f"[ONCHAIN] {addr} => UNVERIFIED invalid_mint_data")
                 continue
             bad=[]
             if info.get("mintAuthority"):bad.append("mint_authority")
@@ -206,9 +250,11 @@ def security_batch(rows):
                 top10=sum(sorted([n(x.get("amount")) for x in largest],reverse=True)[:10])
                 if top10/supply>0.60:bad.append("holder_concentration")
 
-            out[addr]={"status":"RISK" if bad else "PASS","bad":bad}
-            print(f"[ONCHAIN] {addr} => {out[addr]['status']} {bad}")
+            status="RISK" if bad else "PASS"
+            out[addr]={"status":status,"bad":bad,"reason":"security_checks_ok"}
+            print(f"[ONCHAIN] {addr} => {status} {bad}")
         except Exception as e:
+            out[addr]={"status":"UNVERIFIED","bad":[],"reason":"parse_error"}
             print(f"[ONCHAIN] {addr} PARSE ERROR: {type(e).__name__}: {e}")
     return out
 
@@ -246,9 +292,10 @@ def main():
     secmap=security_batch(rows)
     for i,p in enumerate(rows,1):
         addr=(p.get("baseToken") or {}).get("address")
-        sec=secmap.get(addr,{"status":"UNVERIFIED","bad":[]});m=p["_m"];sym=(p.get("baseToken") or {}).get("symbol","?")
+        sec=secmap.get(addr,{"status":"UNVERIFIED","bad":[],"reason":"not_checked"});m=p["_m"];sym=(p.get("baseToken") or {}).get("symbol","?")
         p1=n((p.get("priceChange") or {}).get("h1"));p24=n((p.get("priceChange") or {}).get("h24"));b=m["bp"]*100
-        print("#{:<2} {:<10} score={:>3} burst={:>4.1f}x buy={:>5.1f}% 1h={:+6.1f}% 24h={:+7.1f}% security={}".format(i,sym,p["_score"],m["burst"],b,p1,p24,sec["status"]))
+        sec_label=sec["status"] if sec["status"]=="PASS" else f"{sec['status']}:{sec.get('reason','unknown')}"
+        print("#{:<2} {:<10} score={:>3} burst={:>4.1f}x buy={:>5.1f}% 1h={:+6.1f}% 24h={:+7.1f}% security={}".format(i,sym,p["_score"],m["burst"],b,p1,p24,sec_label))
         if sec["status"]!="PASS" or p1>60 or p24>150 or p1<=-30 or p24<=-50:continue
         if p["_score"]>=75 and (m["burst"]>=2 or m["has_accel"]):level="🔥 STRONG"
         elif p["_score"]>=60 and (m["burst"]>=1.5 or b>=55):level="🟢 INTERESTING"
