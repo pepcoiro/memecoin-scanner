@@ -316,7 +316,7 @@ def main():
     alerts.sort(key=lambda x:(x[0]["_score"],x[0]["_m"]["burst"]),reverse=True)
     if not alerts:print("\nNessun alert Telegram.");return
     for p,level in alerts:
-        text=alert(p,level);print("\n"+"-"*80);print(text);print("-"*80);send(text,p.get("pairAddress"))
+        text=alert(p,level);print("\n"+"-"*80);print(text);print("-"*80);send(text,p.get("pairAddress"),p)
 
 if __name__=="__main__":
     try:main()
