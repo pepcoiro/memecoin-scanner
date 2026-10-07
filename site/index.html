@@ -14,9 +14,9 @@
 .head{display:flex;justify-content:space-between;gap:10px}.token{display:flex;gap:12px;align-items:center}.avatar{width:44px;height:44px;border-radius:13px;background:linear-gradient(135deg,#8b5cf6,#22d3ee);display:grid;place-items:center;font-weight:900}.sym{font-size:18px;font-weight:850}.name{font-size:12px;color:var(--muted);margin-top:2px;max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.score{text-align:right}.score b{font-size:26px}.score small{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.08em}
 .badges{display:flex;gap:6px;flex-wrap:wrap;margin:14px 0}.badge{padding:5px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--muted)}.green{color:#86efac;border-color:#1f6a3a;background:rgba(34,197,94,.08)}.yellow{color:#fcd34d;border-color:#795517;background:rgba(245,158,11,.08)}.red{color:#fca5a5;border-color:#7f3030;background:rgba(239,68,68,.08)}
 .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:13px 0}.metric{background:#0c1017;border:1px solid #1d2531;border-radius:11px;padding:9px}.metric span{display:block;color:var(--muted);font-size:10px}.metric strong{display:block;margin-top:3px;font-size:14px}.rows{display:grid;gap:7px;margin:12px 0 15px}.row{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:12px}.row b{color:#e9edf5}
-.actions{display:flex;gap:8px}.buy{flex:1;text-decoration:none;text-align:center;background:linear-gradient(135deg,#8b5cf6,#6f3ff2);color:#fff;font-weight:850;padding:11px;border-radius:10px}.dex{color:#c0c8d4;text-decoration:none;border:1px solid #2b3441;padding:11px 12px;border-radius:10px}.strategy-btn{width:100%;margin-top:8px;border:1px solid #3a3157;background:#181321;color:#ddd;padding:10px;border-radius:10px;cursor:pointer;font-weight:800}.strategy-btn:hover{border-color:#7a57d1;background:#241b37}
+.actions{display:flex;gap:8px}.buy{flex:1;text-decoration:none;text-align:center;background:linear-gradient(135deg,#8b5cf6,#6f3ff2);color:#fff;font-weight:850;padding:11px;border-radius:10px}.dex{color:#c0c8d4;text-decoration:none;border:1px solid #2b3441;padding:11px 12px;border-radius:10px}
 .empty{grid-column:1/-1;padding:60px 20px;text-align:center;border:1px dashed var(--line);border-radius:18px;color:var(--muted)}.footer{margin-top:20px;color:var(--muted);font-size:11px;text-align:center}
-.modal{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;align-items:center;justify-content:center;padding:18px;z-index:50}.modal.open{display:flex}.modalbox{width:min(760px,100%);background:#10141c;border:1px solid #333b49;border-radius:20px;box-shadow:0 25px 90px rgba(0,0,0,.5);padding:22px}.modalhead{display:flex;justify-content:space-between;gap:12px;align-items:start}.close{border:1px solid #303947;background:#171c25;color:#aaa;border-radius:9px;padding:8px 11px;cursor:pointer}.strategy-title{font-size:22px;font-weight:900}.strategy-sub{color:var(--muted);font-size:12px;margin-top:4px}.strategy-inputs{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:18px 0}.field{display:grid;gap:6px}.field label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}.field input{background:#0c1017;border:1px solid #2b3441;color:#fff;border-radius:10px;padding:11px;outline:none}.plan{display:grid;gap:8px;margin-top:12px}.planrow{display:grid;grid-template-columns:1.4fr .9fr 1fr 1fr;gap:8px;background:#0c1017;border:1px solid #202936;border-radius:11px;padding:10px;font-size:12px}.planrow.head{color:var(--muted);font-size:10px;text-transform:uppercase}.trail{margin-top:12px;background:rgba(139,92,246,.08);border:1px solid #4d3b7c;border-radius:12px;padding:12px}.trail b{color:#c4b5fd}.strategy-note{margin-top:14px;color:#8f9aaa;font-size:11px;line-height:1.5}.modal-actions{display:flex;gap:9px;margin-top:17px}.primary{flex:1;border:0;background:linear-gradient(135deg,#8b5cf6,#6f3ff2);color:#fff;font-weight:900;border-radius:10px;padding:11px;cursor:pointer;text-decoration:none;text-align:center}.secondary{border:1px solid #303947;background:#171c25;color:#ccc;border-radius:10px;padding:11px 14px;cursor:pointer}
+
 @media(max-width:1100px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:760px){.top,.toolbar{flex-direction:column;align-items:stretch}.stats{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}.search{width:100%;min-width:0}.strategy-inputs{grid-template-columns:1fr}}
 </style>
 </head>
@@ -26,33 +26,12 @@
 <div class="stats"><div class="stat"><span>Coppie analizzate</span><strong id="pairs">—</strong></div><div class="stat"><span>Candidati</span><strong id="candidates">—</strong></div><div class="stat"><span>Strong</span><strong id="strong">—</strong></div><div class="stat"><span>Ultimo refresh</span><strong id="refresh">—</strong></div></div>
 <div class="toolbar"><div class="filters"><button class="filter active" data-filter="all">Tutti</button><button class="filter" data-filter="strong">🔥 Strong</button><button class="filter" data-filter="interesting">🟢 Interesting</button><button class="filter" data-filter="fresh">🆕 &lt;24h</button></div><input id="search" class="search" placeholder="Cerca simbolo, nome o contract…"></div>
 <div id="grid" class="grid"><div class="empty">Scansione DexScreener in corso…</div></div>
-<div class="footer">Dati direttamente da DexScreener. Il pulsante Jupiter apre SOL → token con il contract già impostato.</div>
+<div class="footer">Dati direttamente da DexScreener. Il pulsante Axiom apre direttamente la pagina del token.</div>
 </div>
 
-<div id="modal" class="modal">
-<div class="modalbox">
-<div class="modalhead"><div><div class="strategy-title" id="strategyName">Gestione posizione</div><div class="strategy-sub" id="strategyContract"></div></div><button class="close" id="closeModal">✕</button></div>
-<div class="strategy-inputs">
-<div class="field"><label>Capitale investito (€)</label><input id="strategyAmount" type="number" min="10" step="1" value="50"></div>
-<div class="field"><label>Prezzo di ingresso ($)</label><input id="strategyEntry" type="number" min="0" step="0.00000001"></div>
-</div>
-<div class="plan">
-<div class="planrow head"><span>Uscita</span><span>Target</span><span>Vende</span><span>Restante</span></div>
-<div class="planrow"><span>TP1</span><b>+30%</b><span>30%</span><span>70%</span></div>
-<div class="planrow"><span>TP2</span><b>+60%</b><span>30%</span><span>40%</span></div>
-<div class="planrow"><span>TP3</span><b>+90%</b><span>30%</span><span>10%</span></div>
-<div class="planrow"><span>TP4</span><b>+200%</b><span>10%</span><span>0%</span></div>
-</div>
-<div class="trail">🛡️ <b>TRAILING STOP −30% DAL MASSIMO</b><div id="trailText" class="strategy-sub">Vende tutto il residuo quando il prezzo perde il 30% dal massimo raggiunto.</div></div>
-<div class="plan" id="pricePlan"></div>
-<div class="strategy-note">Preset: 30% / 30% / 30% / 10% ai target + trailing stop del 30% dal massimo. Questa schermata calcola la strategia; l'esecuzione automatica dei 5 ordini richiede un livello di orchestrazione sopra le primitive Jupiter.</div>
-<div class="modal-actions"><button class="secondary" id="closeModal2">Chiudi</button><a id="buyFromModal" class="primary" target="_blank" rel="noopener">🟣 APRI JUPITER</a></div>
-</div>
-</div>
 
 <script>
 const API="https://api.dexscreener.com";
-const SOL="So11111111111111111111111111111111111111112";
 const PROFILE_LIMIT=150;
 const BATCH=25;
 const REFRESH_MS=30000;
@@ -60,7 +39,6 @@ const STATE_KEY="memecoin_scanner_v1";
 let allPairs=[];
 let currentFilter="all";
 let currentQuery="";
-let strategyToken=null;
 
 function n(x){const v=Number(x);return Number.isFinite(v)?v:0}
 function money(x){return new Intl.NumberFormat("it-IT",{notation:"compact",maximumFractionDigits:1}).format(n(x))}
@@ -71,7 +49,7 @@ function bp(p){const t=p.txns&&p.txns.h1?p.txns.h1:{},b=n(t.buys),s=n(t.sells);r
 function burst(p){const v1=n(p.volume&&p.volume.h1),v24=n(p.volume&&p.volume.h24);return v24?v1*24/v24:0}
 function previous(){try{return JSON.parse(localStorage.getItem(STATE_KEY)||"{}")}catch(e){return {}}}
 function savePrevious(v){try{localStorage.setItem(STATE_KEY,JSON.stringify(v))}catch(e){}}
-function jup(addr){return "https://jup.ag/?buy="+encodeURIComponent(addr)+"&sell="+SOL}
+function axiom(addr){return "https://axiom.trade/t/"+encodeURIComponent(addr)}
 
 function score(p,old){
  const liq=n(p.liquidity&&p.liquidity.usd),mc=n(p.marketCap||p.fdv),v1=n(p.volume&&p.volume.h1),v24=n(p.volume&&p.volume.h24);
@@ -126,28 +104,8 @@ function render(){
   '<div class="badges">'+(p._level?'<span class="badge '+(hot?"red":"green")+'">'+(hot?"🔥 STRONG":"🟢 INTERESTING")+'</span>':'')+(a<=24?'<span class="badge yellow">🆕 '+a.toFixed(1)+'h</span>':'')+'<span class="badge">'+esc(p.dexId||"?")+'</span></div>'+
   '<div class="metrics"><div class="metric"><span>Liquidity</span><strong>$'+money(p.liquidity&&p.liquidity.usd)+'</strong></div><div class="metric"><span>Market Cap</span><strong>$'+money(p.marketCap||p.fdv)+'</strong></div><div class="metric"><span>Vol 1h</span><strong>$'+money(p.volume&&p.volume.h1)+'</strong></div></div>'+
   '<div class="rows"><div class="row"><span>Volume burst</span><b>'+m.burst.toFixed(2)+'x</b></div><div class="row"><span>Buy pressure</span><b>'+(m.bp*100).toFixed(1)+'%</b></div><div class="row"><span>Accelerazione</span><b>'+(m.hasAccel?m.accel.toFixed(2)+"x":"N/D")+'</b></div><div class="row"><span>Price 1h / 24h</span><b>'+pct(p.priceChange&&p.priceChange.h1)+' / '+pct(p.priceChange&&p.priceChange.h24)+'</b></div></div>'+
-  '<div class="actions"><a class="buy" href="'+jup(t.address||"")+'" target="_blank" rel="noopener">🟣 COMPRA SU JUPITER</a><a class="dex" href="'+esc(p.url||"#")+'" target="_blank" rel="noopener">DEX</a></div>'+
-  '<button class="strategy-btn" data-pair="'+esc(p.pairAddress||"")+'">⚙️ IMPOSTA STRATEGIA</button></article>';
+  '<div class="actions"><a class="buy" href="'+axiom(t.address||"")+'" target="_blank" rel="noopener">🟣 APRI AXIOM</a><a class="dex" href="'+esc(p.url||"#")+'" target="_blank" rel="noopener">DEX</a></div></article>';
  }).join("");
-}
-
-function openStrategy(token){
- strategyToken=token;
- document.getElementById("strategyName").textContent="Gestione · "+(token.baseToken?.symbol||"?");
- document.getElementById("strategyContract").textContent=token.baseToken?.address||"";
- document.getElementById("strategyEntry").value=Number(token.priceUsd||0);
- document.getElementById("buyFromModal").href=jup(token.baseToken?.address||"");
- document.getElementById("modal").classList.add("open");
- updatePlan();
-}
-function closeStrategy(){document.getElementById("modal").classList.remove("open")}
-function updatePlan(){
- const entry=Number(document.getElementById("strategyEntry").value||0),amount=Number(document.getElementById("strategyAmount").value||0);
- const targets=[30,60,90,200],sells=[30,30,30,10];
- let rows="";
- for(let i=0;i<targets.length;i++){const price=entry*(1+targets[i]/100),value=amount*sells[i]/100;rows+='<div class="planrow"><span>TP'+(i+1)+'</span><b>$'+(price?price.toPrecision(8):"—")+'</b><span>€'+value.toFixed(2)+'</span><span>+'+targets[i]+'%</span></div>'}
- document.getElementById("pricePlan").innerHTML='<div class="planrow head"><span>TP</span><span>Prezzo</span><span>Valore venduto</span><span>Target</span></div>'+rows;
- document.getElementById("trailText").textContent=entry?"Il trigger segue il massimo. Se il massimo fosse $"+entry.toPrecision(8)+", il trigger sarebbe $"+(entry*.7).toPrecision(8)+" (-30%).":"Inserisci il prezzo di ingresso.";
 }
 
 async function scan(){
@@ -173,15 +131,7 @@ async function scan(){
 
 document.querySelectorAll(".filter").forEach(function(b){b.onclick=function(){document.querySelectorAll(".filter").forEach(function(x){x.classList.remove("active")});b.classList.add("active");currentFilter=b.dataset.filter;render()}});
 document.getElementById("search").oninput=function(e){currentQuery=e.target.value;render()};
-document.getElementById("strategyEntry").oninput=updatePlan;
-document.getElementById("strategyAmount").oninput=updatePlan;
-document.getElementById("closeModal").onclick=closeStrategy;
-document.getElementById("closeModal2").onclick=closeStrategy;
-document.getElementById("modal").onclick=function(e){if(e.target.id==="modal")closeStrategy()};
-document.addEventListener("click",function(e){
- const b=e.target.closest(".strategy-btn");if(!b)return;
- const token=allPairs.find(function(x){return x.pairAddress===b.dataset.pair});if(token)openStrategy(token);
-});
+
 
 scan();
 setInterval(scan,REFRESH_MS);
