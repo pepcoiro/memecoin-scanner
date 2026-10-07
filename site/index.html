@@ -217,8 +217,13 @@ function classify(p){const p1=n(p.priceChange&&p.priceChange.h1),p24=n(p.priceCh
 
 async function getJSON(url){const r=await fetch(url,{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);return r.json()}
 async function discover(){
- const [profiles,boosts]=await Promise.all([getJSON(API+"/token-profiles/latest/v1"),getJSON(API+"/token-boosts/latest/v1").catch(function(){return []})]);
- const addresses=[...(profiles||[]),...(boosts||[])].filter(function(x){return String(x.chainId||"").toLowerCase()==="solana"&&x.tokenAddress}).map(function(x){return x.tokenAddress});
+ const results=await Promise.all([
+  getJSON(API+"/token-profiles/latest/v1").catch(function(){return []}),
+  getJSON(API+"/token-boosts/latest/v1").catch(function(){return []})
+ ]);
+ const profiles=results[0]||[];
+ const boosts=results[1]||[];
+ const addresses=[...profiles,...boosts].filter(function(x){return String(x.chainId||"").toLowerCase()==="solana"&&x.tokenAddress}).map(function(x){return x.tokenAddress});
  const unique=[...new Set(addresses)].slice(0,PROFILE_LIMIT);
  const chunks=[];for(let i=0;i<unique.length;i+=BATCH)chunks.push(unique.slice(i,i+BATCH));
  const responses=await Promise.all(chunks.map(function(c){return getJSON(API+"/tokens/v1/solana/"+c.join(","))}));
@@ -749,7 +754,9 @@ async function discoverScan(){
  document.getElementById("status").textContent="Discovery DexScreener…";
  try{
   const old=previous(),pairs=await discover();
-  allPairs=await dedupeAndRank(pairs,old);
+  if(pairs.length){
+   allPairs=await dedupeAndRank(pairs,old);
+  }
   const next={};
   for(const p of allPairs) next[p.pairAddress]={v1:n(p.volume&&p.volume.h1),ts:Date.now()};
   savePrevious(next);
@@ -757,14 +764,15 @@ async function discoverScan(){
   document.getElementById("candidates").textContent=allPairs.length;
   document.getElementById("strong").textContent=allPairs.filter(function(p){return p._level==="STRONG"}).length;
   document.getElementById("refresh").textContent=new Date().toLocaleTimeString("it-IT");
-  document.getElementById("status").textContent="Live · discovery 30s · Birth Radar · 80 token";
+  document.getElementById("status").textContent=pairs.length?"Live · discovery 30s · Birth Radar · 80 token":"Live · Birth Radar · DexScreener discovery non disponibile";
   checkStrongNotifications(allPairs);
   render();
   await refreshOnchainSecurity(allPairs);
   connectRealtimeSocket();
  }catch(e){
-  document.getElementById("status").textContent="Errore DexScreener";
-  document.getElementById("grid").innerHTML='<div class="empty"><b>Impossibile leggere DexScreener.</b><br><br>'+esc(e.message)+'</div>';
+  document.getElementById("status").textContent="Live · Birth Radar · DexScreener offline";
+  if(!allPairs.length)document.getElementById("grid").innerHTML='<div class="empty">Birth Radar attivo. Discovery DexScreener temporaneamente non disponibile.</div>';
+  connectRealtimeSocket();
  }
 }
 
@@ -799,6 +807,8 @@ document.getElementById("search").oninput=function(e){currentQuery=e.target.valu
 document.getElementById("notifyBtn").onclick=enableNotifications;
 updateNotifyButton();
 
+connectRealtimeSocket();
+startFallbackMonitor();
 discoverScan();
 setInterval(discoverScan,DISCOVERY_MS);
 </script>
