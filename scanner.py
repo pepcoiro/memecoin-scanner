@@ -302,7 +302,7 @@ def jupiter_url(p):
     addr=(p.get("baseToken") or {}).get("address","").strip()
     if not addr:
         return ""
-    return f"https://jup.ag/swap/SOL-{addr}"
+    return f"https://jup.ag/?buy={addr}&sell={JUPITER_SOL}"
 
 def alert(p,level):
     t=p.get("baseToken") or {};m=p["_m"];pc=p.get("priceChange") or {};usd,sol=max_position(p)
