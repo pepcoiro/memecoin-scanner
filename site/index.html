@@ -108,7 +108,6 @@ async function discover(){
 }
 
 function render(){
- if(currentMarket==="markets"){renderMarkets();return}
  let list=allPairs.filter(function(p){
   const q=currentQuery.toLowerCase(),text=(p.baseToken?.symbol||"")+" "+(p.baseToken?.name||"")+" "+(p.baseToken?.address||"");
   const hit=!q||text.toLowerCase().includes(q);
