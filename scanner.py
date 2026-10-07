@@ -9,7 +9,7 @@ BOT=os.getenv("TELEGRAM_BOT_TOKEN","").strip(); CHAT=os.getenv("TELEGRAM_CHAT_ID
 HELIUS_API_KEY=os.getenv("HELIUS_API_KEY","").strip()
 SOLANA_RPC=f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else ""
 JUPITER_API_KEY=os.getenv("JUPITER_API_KEY","").strip()
-JUPITER_BASE="https://api.jup.ag" if JUPITER_API_KEY else "https://lite-api.jup.ag"
+JUPITER_BASE="https://api.jup.ag"
 JUPITER_QUOTE_AMOUNT=10_000_000  # 0.01 SOL, solo per verificare che esista una rotta
 S=requests.Session(); S.headers.update({"User-Agent":"MemecoinScanner/4.0"})
 
@@ -268,11 +268,15 @@ def jupiter_quote(p):
     if not addr:
         return {"status":"UNVERIFIED","reason":"missing_mint","route":False}
     try:
+        if not JUPITER_API_KEY:
+            return {"status":"UNVERIFIED","reason":"missing_api_key","route":False}
         params={
             "inputMint":JUPITER_SOL,
             "outputMint":addr,
             "amount":JUPITER_QUOTE_AMOUNT,
-            "slippageBps":100
+            "slippageBps":100,
+            "restrictIntermediateTokens":"true",
+            "instructionVersion":"V2"
         }
         headers={"x-api-key":JUPITER_API_KEY} if JUPITER_API_KEY else {}
         r=S.get(f"{JUPITER_BASE}/swap/v1/quote",params=params,headers=headers,timeout=TIMEOUT)
