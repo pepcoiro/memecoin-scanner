@@ -146,7 +146,6 @@ def discover():
     save(STATE,new);rows.sort(key=lambda p:(p["_score"],p["_m"]["accel"],p["_m"]["burst"]),reverse=True)
     return rows[:TOP_N]
 
-SOLANA_RPC=os.getenv("SOLANA_RPC_URL","https://api.mainnet.solana.com").strip()
 
 def rpc_batch(calls):
     if not SOLANA_RPC:
