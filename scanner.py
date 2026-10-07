@@ -377,7 +377,10 @@ def send(text,pair,p=None):
 def main():
     print("="*80);print(" MEMECOIN SCANNER — SOLANA");print(" MARKET DATA + SECURITY + MAX POSITION");print("="*80)
     rows=discover()
-    if not rows:print("Nessun candidato.");return
+    if not rows:
+        write_site_data([],[])
+        print("Nessun candidato. Dashboard aggiornata.")
+        return
     alerts=[]
     secmap=security_batch(rows)
     for i,p in enumerate(rows,1):
