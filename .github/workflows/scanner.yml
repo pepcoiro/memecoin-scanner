@@ -29,9 +29,9 @@ jobs:
           path: |
             scanner_state.json
             telegram_alert_state.json
-          key: scanner-state-${{ github.run_id }}
+          key: scanner-state-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
-            scanner-state-
+            scanner-state-${{ github.ref_name }}-
 
       - name: Install dependencies
         run: |
@@ -51,4 +51,4 @@ jobs:
           path: |
             scanner_state.json
             telegram_alert_state.json
-          key: scanner-state-${{ github.run_id }}
+          key: scanner-state-${{ github.ref_name }}-${{ github.run_id }}
