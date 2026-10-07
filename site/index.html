@@ -15,7 +15,7 @@
 .badges{display:flex;gap:6px;flex-wrap:wrap;margin:14px 0}.badge{padding:5px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--muted)}.green{color:#86efac;border-color:#1f6a3a;background:rgba(34,197,94,.08)}.yellow{color:#fcd34d;border-color:#795517;background:rgba(245,158,11,.08)}.red{color:#fca5a5;border-color:#7f3030;background:rgba(239,68,68,.08)}
 .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:13px 0}.metric{background:#0c1017;border:1px solid #1d2531;border-radius:11px;padding:9px}.metric span{display:block;color:var(--muted);font-size:10px}.metric strong{display:block;margin-top:3px;font-size:14px}.rows{display:grid;gap:7px;margin:12px 0 15px}.row{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:12px}.row b{color:#e9edf5}
 .actions{display:flex;gap:8px}.buy{flex:1;text-decoration:none;text-align:center;background:linear-gradient(135deg,#8b5cf6,#6f3ff2);color:#fff;font-weight:850;padding:11px;border-radius:10px}.dex{color:#c0c8d4;text-decoration:none;border:1px solid #2b3441;padding:11px 12px;border-radius:10px}.empty{grid-column:1/-1;padding:60px 20px;text-align:center;border:1px dashed var(--line);border-radius:18px;color:var(--muted)}.footer{margin-top:20px;color:var(--muted);font-size:11px;text-align:center}
-@media(max-width:1100px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:760px){.top,.toolbar{flex-direction:column;align-items:stretch}.stats{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}.search{width:100%;min-width:0}}
+.strategy-btn{width:100%;margin-top:8px;border:1px solid #3a3157;background:#181321;color:#ddd;padding:10px;border-radius:10px;cursor:pointer;font-weight:800}.strategy-btn:hover{border-color:#7a57d1;background:#241b37}.modal{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;align-items:center;justify-content:center;padding:18px;z-index:50}.modal.open{display:flex}.modalbox{width:min(760px,100%);background:#10141c;border:1px solid #333b49;border-radius:20px;box-shadow:0 25px 90px rgba(0,0,0,.5);padding:22px}.modalhead{display:flex;justify-content:space-between;gap:12px;align-items:start}.close{border:1px solid #303947;background:#171c25;color:#aaa;border-radius:9px;padding:8px 11px;cursor:pointer}.strategy-title{font-size:22px;font-weight:900}.strategy-sub{color:var(--muted);font-size:12px;margin-top:4px}.strategy-inputs{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:18px 0}.field{display:grid;gap:6px}.field label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}.field input{background:#0c1017;border:1px solid #2b3441;color:#fff;border-radius:10px;padding:11px;outline:none}.plan{display:grid;gap:8px;margin-top:12px}.planrow{display:grid;grid-template-columns:1.4fr .9fr 1fr 1fr;gap:8px;background:#0c1017;border:1px solid #202936;border-radius:11px;padding:10px;font-size:12px}.planrow.head{color:var(--muted);font-size:10px;text-transform:uppercase}.trail{margin-top:12px;background:rgba(139,92,246,.08);border:1px solid #4d3b7c;border-radius:12px;padding:12px}.trail b{color:#c4b5fd}.strategy-note{margin-top:14px;color:#8f9aaa;font-size:11px;line-height:1.5}.modal-actions{display:flex;gap:9px;margin-top:17px}.primary{flex:1;border:0;background:linear-gradient(135deg,#8b5cf6,#6f3ff2);color:#fff;font-weight:900;border-radius:10px;padding:11px;cursor:pointer;text-decoration:none;text-align:center}.secondary{border:1px solid #303947;background:#171c25;color:#ccc;border-radius:10px;padding:11px 14px;cursor:pointer}@media(max-width:1100px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:760px){.top,.toolbar{flex-direction:column;align-items:stretch}.stats{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:1fr}.search{width:100%;min-width:0}}
 </style>
 </head>
 <body>
@@ -43,7 +43,7 @@
   </div>
 
   <div id="grid" class="grid"><div class="empty">Scansione DexScreener in corso…</div></div>
-  <div class="footer">I dati arrivano direttamente da DexScreener. Il pulsante Jupiter apre SOL → token con il contract già impostato.</div>
+  <div id="modal" class="modal"><div class="modalbox"><div class="modalhead"><div><div class="strategy-title" id="strategyName">Gestione posizione</div><div class="strategy-sub" id="strategyContract"></div></div><button class="close" onclick="closeStrategy()">✕</button></div><div class="strategy-inputs"><div class="field"><label>Capitale investito (€)</label><input id="strategyAmount" type="number" min="10" step="1" value="50"></div><div class="field"><label>Prezzo di ingresso ($)</label><input id="strategyEntry" type="number" min="0" step="0.00000001"></div></div><div class="plan"><div class="planrow head"><span>Uscita</span><span>Target</span><span>Vende</span><span>Restante</span></div><div class="planrow"><span>TP1</span><b>+30%</b><span>30%</span><span>70%</span></div><div class="planrow"><span>TP2</span><b>+60%</b><span>30%</span><span>40%</span></div><div class="planrow"><span>TP3</span><b>+90%</b><span>30%</span><span>10%</span></div><div class="planrow"><span>TP4</span><b>+200%</b><span>10%</span><span>0%</span></div></div><div class="trail">🛡️ <b>TRAILING STOP −30% DAL MASSIMO</b><div id="trailText" class="strategy-sub">Vende tutto il residuo quando il prezzo perde il 30% dal massimo raggiunto.</div></div><div class="plan" id="pricePlan"></div><div class="strategy-note">Preset di uscita: 30% / 30% / 30% / 10% ai target + trailing stop del 30% dal massimo per il residuo.</div><div class="modal-actions"><button class="secondary" onclick="closeStrategy()">Chiudi</button><a id="buyFromModal" class="primary" target="_blank" rel="noopener">🟣 APRI JUPITER</a></div></div></div><div class="footer">I dati arrivano direttamente da DexScreener. Il pulsante Jupiter apre SOL → token con il contract già impostato.</div>
 </div>
 
 <script>
@@ -133,9 +133,60 @@ function render(){
       '<div class="badges">'+(p._level?'<span class="badge '+(hot?"red":"green")+'">'+(hot?"🔥 STRONG":"🟢 INTERESTING")+'</span>':'')+(a<=24?'<span class="badge yellow">🆕 '+a.toFixed(1)+'h</span>':'')+'<span class="badge">'+esc(p.dexId||"?")+'</span></div>'+
       '<div class="metrics"><div class="metric"><span>Liquidity</span><strong>$'+money(p.liquidity?.usd)+'</strong></div><div class="metric"><span>Market Cap</span><strong>$'+money(p.marketCap||p.fdv)+'</strong></div><div class="metric"><span>Vol 1h</span><strong>$'+money(p.volume?.h1)+'</strong></div></div>'+
       '<div class="rows"><div class="row"><span>Volume burst</span><b>'+m.burst.toFixed(2)+'x</b></div><div class="row"><span>Buy pressure</span><b>'+(m.bp*100).toFixed(1)+'%</b></div><div class="row"><span>Accelerazione</span><b>'+(m.hasAccel?m.accel.toFixed(2)+"x":"N/D")+'</b></div><div class="row"><span>Price 1h / 24h</span><b>'+pct(p.priceChange?.h1)+' / '+pct(p.priceChange?.h24)+'</b></div></div>'+
-      '<div class="actions"><a class="buy" href="'+jup(t.address)+'" target="_blank" rel="noopener">🟣 COMPRA SU JUPITER</a><a class="dex" href="'+esc(p.url||"#")+'" target="_blank" rel="noopener">DEX</a></div></article>';
+      '<div class="actions"><a class="buy" href="'+jup(t.address)+'" target="_blank" rel="noopener">🟣 COMPRA SU JUPITER</a><a class="dex" href="'+esc(p.url||"#")+'" target="_blank" rel="noopener">DEX</a></div><button class="strategy-btn" data-pair="'+esc(p.pairAddress||"")+'">⚙️ IMPOSTA STRATEGIA</button></article>';
   }).join("");
 }
+let strategyToken=null;
+function openStrategy(token){
+ strategyToken=token;
+ document.getElementById("strategyName").textContent="Gestione · "+(token.baseToken?.symbol||"?");
+ document.getElementById("strategyContract").textContent=token.baseToken?.address||"";
+ document.getElementById("strategyEntry").value=Number(token.priceUsd||0);
+ document.getElementById("buyFromModal").href=jup(token.baseToken?.address||"");
+ document.getElementById("modal").classList.add("open");
+ updatePlan();
+}
+function closeStrategy(){document.getElementById("modal").classList.remove("open")}
+function updatePlan(){
+ const entry=Number(document.getElementById("strategyEntry").value||0);
+ const amount=Number(document.getElementById("strategyAmount").value||0);
+ const targets=[30,60,90,200],sells=[30,30,30,10];
+ const rows=targets.map((x,i)=>{
+  const price=entry*(1+x/100),value=amount*sells[i]/100;
+  return '<div class="planrow"><span>TP'+(i+1)+'</span><b>
+  document.getElementById("status").textContent="Aggiornamento DexScreener…";
+  try{
+    const old=previous();
+    const pairs=await discover();
+    const filtered=pairs.filter(passes).map(p=>enriched(p,old)).filter(classify);
+    filtered.sort((a,b)=>b._m.score-a._m.score);
+    const byToken=new Map();
+    for(const p of filtered){const k=p.baseToken?.address||p.pairAddress;const q=byToken.get(k);if(!q||p._m.score>q._m.score)byToken.set(k,p)}
+    allPairs=[...byToken.values()];
+    const next={};for(const p of allPairs)next[p.pairAddress]={v1:n(p.volume?.h1),ts:Date.now()};savePrevious(next);
+    document.getElementById("pairs").textContent=pairs.length;
+    document.getElementById("candidates").textContent=allPairs.length;
+    document.getElementById("strong").textContent=allPairs.filter(p=>p._level==="STRONG").length;
+    document.getElementById("refresh").textContent=new Date().toLocaleTimeString("it-IT");
+    document.getElementById("status").textContent="Live · DexScreener";
+    render();
+  }catch(e){
+    document.getElementById("status").textContent="Errore DexScreener";
+    document.getElementById("grid").innerHTML='<div class="empty"><b>Impossibile leggere DexScreener.</b><br><br>'+esc(e.message)+'<br><br>Se il browser blocca le richieste CORS, servirà un piccolo proxy.</div>';
+  }
+}
+document.querySelectorAll(".filter").forEach(b=>b.onclick=()=>{document.querySelectorAll(".filter").forEach(x=>x.classList.remove("active"));b.classList.add("active");filter=b.dataset.filter;render()});
+document.getElementById("search").oninput=e=>{query=e.target.value;render()};\ndocument.addEventListener("click",e=>{const b=e.target.closest(".strategy-btn");if(!b)return;const token=allPairs.find(x=>x.pairAddress===b.dataset.pair);if(token)openStrategy(token)});
+scan();setInterval(scan,REFRESH_MS);
+</script>
+</body></html>+(price?price.toPrecision(8):"—")+'</b><span>€'+value.toFixed(2)+'</span><span>+'+x+'%</span></div>';
+ }).join("");
+ document.getElementById("pricePlan").innerHTML='<div class="planrow head"><span>TP</span><span>Prezzo</span><span>Valore venduto</span><span>Target</span></div>'+rows;
+ document.getElementById("trailText").textContent=entry?"Il trigger segue il massimo. Al massimo attuale $"+entry.toPrecision(8)+" sarebbe $"+(entry*.7).toPrecision(8)+" (-30%).":"Inserisci il prezzo di ingresso.";
+}
+document.getElementById("strategyEntry").addEventListener("input",updatePlan);
+document.getElementById("strategyAmount").addEventListener("input",updatePlan);
+document.getElementById("modal").addEventListener("click",e=>{if(e.target.id==="modal")closeStrategy()});
 async function scan(){
   document.getElementById("status").textContent="Aggiornamento DexScreener…";
   try{
