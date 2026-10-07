@@ -148,15 +148,42 @@ def discover():
 
 def gtoken(force=False):
     global GTOKEN,GEXP
-    if not GKEY or not GSECRET:return None
+    if not GKEY or not GSECRET:
+        print("[GoPlus DEBUG] TOKEN AUTH: missing GOPLUS_APP_KEY or GOPLUS_APP_SECRET")
+        return None
+
     now=int(time.time())
-    if not force and GTOKEN and now<GEXP-60:return GTOKEN
+    if not force and GTOKEN and now<GEXP-60:
+        return GTOKEN
+
     sign=hashlib.sha1(f"{GKEY}{now}{GSECRET}".encode()).hexdigest()
     try:
-        r=S.post("https://api.gopluslabs.io/api/v1/token",json={"app_key":GKEY,"time":now,"sign":sign},timeout=TIMEOUT)
-        if r.status_code not in (200,201):return None
-        z=r.json().get("result") or {};GTOKEN=z.get("access_token");GEXP=now+int(z.get("expires_in") or 3600);return GTOKEN
-    except:return None
+        r=S.post(
+            "https://api.gopluslabs.io/api/v1/token",
+            json={"app_key":GKEY,"time":now,"sign":sign},
+            timeout=TIMEOUT
+        )
+        print(f"[GoPlus DEBUG] TOKEN HTTP STATUS: {r.status_code}")
+        print(f"[GoPlus DEBUG] TOKEN RESPONSE: {r.text[:1000]}")
+
+        if r.status_code not in (200,201):
+            return None
+
+        payload=r.json()
+        z=payload.get("result") or {}
+        GTOKEN=z.get("access_token")
+        GEXP=now+int(z.get("expires_in") or 3600)
+
+        print(f"[GoPlus DEBUG] TOKEN CREATED: {'YES' if GTOKEN else 'NO'}")
+        print(f"[GoPlus DEBUG] TOKEN LENGTH: {len(GTOKEN) if GTOKEN else 0}")
+        print(f"[GoPlus DEBUG] TOKEN EXPIRES_IN: {z.get('expires_in')}")
+
+        return GTOKEN
+    except Exception as e:
+        print(f"[GoPlus DEBUG] TOKEN EXCEPTION: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        return None
+
 
 def security(p):
     addr=(p.get("baseToken") or {}).get("address")
@@ -169,7 +196,7 @@ def security(p):
         return {"status":"UNVERIFIED","bad":[]}
 
     print(f"[GoPlus DEBUG] {sym} AUTH OK")
-    h={"Authorization":f"Bearer {tok}"}
+    h={"Authorization":tok}
     url="https://api.gopluslabs.io/api/v1/solana/token_security"
 
     try:
@@ -187,7 +214,7 @@ def security(p):
             if not tok:
                 print(f"[GoPlus DEBUG] {sym} RETRY AUTH FAILED")
                 return {"status":"UNVERIFIED","bad":[]}
-            h["Authorization"]=f"Bearer {tok}"
+            h["Authorization"]=tok
             r=S.get(url,params=params,headers=h,timeout=TIMEOUT)
             print(f"[GoPlus DEBUG] {sym} RETRY HTTP STATUS: {r.status_code}")
             print(f"[GoPlus DEBUG] {sym} RETRY RESPONSE: {r.text[:3000]}")
