@@ -7,7 +7,7 @@
 <style>
 :root{--bg:#07090e;--panel:#10141c;--text:#f4f7fb;--muted:#8f9aaa;--line:#242c39;--purple:#8b5cf6;--green:#22c55e;--red:#ef4444;--yellow:#f59e0b}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 50% -10%,#201743 0,#07090e 48%);color:var(--text);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}.wrap{max-width:1500px;margin:auto;padding:28px 22px 50px}
-.top{display:flex;justify-content:space-between;gap:20px;align-items:end;margin-bottom:22px}.brand h1{margin:0;font-size:31px;letter-spacing:-.04em}.brand p{margin:7px 0 0;color:var(--muted)}.status{display:flex;gap:9px;align-items:center;color:var(--muted);font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 14px rgba(34,197,94,.65)}
+.top{display:flex;justify-content:space-between;gap:20px;align-items:end;margin-bottom:22px}.notify{border:1px solid #3a314f;background:#171322;color:#d8ccff;padding:7px 10px;border-radius:9px;cursor:pointer;font-size:12px;font-weight:750}.notify:hover{border-color:#6b4ec2;background:#211a31}.notify:disabled{opacity:.6;cursor:default}.brand h1{margin:0;font-size:31px;letter-spacing:-.04em}.brand p{margin:7px 0 0;color:var(--muted)}.status{display:flex;gap:9px;align-items:center;color:var(--muted);font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 14px rgba(34,197,94,.65)}
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}.stat{background:rgba(16,20,28,.88);border:1px solid var(--line);border-radius:16px;padding:15px}.stat span{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em}.stat strong{display:block;margin-top:6px;font-size:24px}
 .toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px}.filters{display:flex;gap:8px;flex-wrap:wrap}.filter{border:1px solid var(--line);background:var(--panel);color:var(--muted);padding:8px 12px;border-radius:999px;cursor:pointer}.filter.active{color:#fff;background:#241c3d;border-color:#6b4ec2}.search{background:var(--panel);border:1px solid var(--line);color:#fff;padding:10px 13px;border-radius:11px;min-width:270px;outline:none}
 .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.card{background:linear-gradient(180deg,rgba(21,27,37,.98),rgba(13,17,24,.98));border:1px solid var(--line);border-radius:18px;padding:17px;box-shadow:0 15px 40px rgba(0,0,0,.18)}.card.hot{border-color:#5b46a5;box-shadow:0 0 0 1px rgba(139,92,246,.16),0 20px 48px rgba(0,0,0,.25)}
@@ -22,7 +22,7 @@
 </head>
 <body>
 <div class="wrap">
-<div class="top"><div class="brand"><h1>MEMECOIN SCANNER <span style="color:#8b5cf6">/ SOLANA</span></h1><p>DexScreener discovery · Solana WebSocket · momentum · liquidity · buy pressure</p></div><div class="status"><i class="dot"></i><span id="status">Connessione a DexScreener…</span></div></div>
+<div class="top"><div class="brand"><h1>MEMECOIN SCANNER <span style="color:#8b5cf6">/ SOLANA</span></h1><p>DexScreener discovery · Solana WebSocket · momentum · liquidity · buy pressure</p></div><div class="status"><button id="notifyBtn" class="notify" type="button">🔔 Attiva notifiche</button><i class="dot"></i><span id="status">Connessione a DexScreener…</span></div></div>
 <div class="stats"><div class="stat"><span>Coppie analizzate</span><strong id="pairs">—</strong></div><div class="stat"><span>Candidati</span><strong id="candidates">—</strong></div><div class="stat"><span>Strong</span><strong id="strong">—</strong></div><div class="stat"><span>Ultimo refresh</span><strong id="refresh">—</strong></div></div>
 <div class="toolbar"><div class="filters"><button class="filter active" data-filter="all">Tutti</button><button class="filter" data-filter="strong">🔥 Strong</button><button class="filter" data-filter="interesting">🟢 Interesting</button><button class="filter" data-filter="watch">🟡 Watch</button><button class="filter" data-filter="birth">🆕 Birth</button><button id="freshFilter" class="filter" data-filter="fresh">🆕 &lt;24h</button></div><input id="search" class="search" placeholder="Cerca simbolo, nome o contract…"></div>
 <div id="grid" class="grid"><div class="empty">Scansione DexScreener in corso…</div></div>
@@ -57,6 +57,10 @@ let wsFlushTimer=null;
 let wsReconnectTimer=null;
 let wsGeneration=0;
 let fallbackTimer=null;
+const NOTIFY_STATE_KEY="memecoin_scanner_notifications_v1";
+let notificationsEnabled=false;
+let notificationsArmed=false;
+const knownLevels=new Map();
 
 function n(x){const v=Number(x);return Number.isFinite(v)?v:0}
 function money(x){return new Intl.NumberFormat("it-IT",{notation:"compact",maximumFractionDigits:1}).format(n(x))}
@@ -68,6 +72,49 @@ function burst(p){const v1=n(p.volume&&p.volume.h1),v24=n(p.volume&&p.volume.h24
 function previous(){try{return JSON.parse(localStorage.getItem(STATE_KEY)||"{}")}catch(e){return {}}}
 function savePrevious(v){try{localStorage.setItem(STATE_KEY,JSON.stringify(v))}catch(e){}}
 function terminal(addr){return "https://trade.padre.gg/trade/solana/"+encodeURIComponent(addr)}
+function updateNotifyButton(){
+ const btn=document.getElementById("notifyBtn");
+ if(!btn)return;
+ if(!("Notification" in window)){btn.textContent="🔕 Notifiche non supportate";btn.disabled=true;return}
+ if(Notification.permission==="granted"){notificationsEnabled=true;btn.textContent="🔔 Notifiche attive";btn.title="Notifiche Strong attive"}
+ else if(Notification.permission==="denied"){notificationsEnabled=false;btn.textContent="🔕 Notifiche bloccate";btn.title="Abilita le notifiche dalle impostazioni del browser"}
+ else{btn.textContent="🔔 Attiva notifiche";btn.title="Ricevi una notifica quando un token entra in STRONG"}
+}
+function notifyStrong(p){
+ if(!notificationsEnabled||!notificationsArmed||!("Notification" in window)||Notification.permission!=="granted")return;
+ const t=p.baseToken||{},symbol=t.symbol||"TOKEN",address=t.address||"";
+ const body="Score "+n(p._m&&p._m.score)+" · MC $"+money(p.marketCap||p.fdv)+" · Liquidity $"+money(p.liquidity&&p.liquidity.usd);
+ try{
+  const note=new Notification("🔥 STRONG — $"+symbol,{body:body,tag:"memecoin-strong-"+address,renotify:false});
+  note.onclick=function(){window.focus();if(address)window.open(terminal(address),"_blank","noopener");note.close()};
+ }catch(e){}
+}
+function checkStrongNotifications(pairs){
+ const present=new Set();
+ for(const p of pairs){
+  const address=p.baseToken?.address;
+  if(!address)continue;
+  present.add(address);
+  const level=p._level||"";
+  const previousLevel=knownLevels.get(address);
+  if(level==="STRONG"&&previousLevel!=="STRONG")notifyStrong(p);
+  knownLevels.set(address,level);
+ }
+ for(const address of [...knownLevels.keys()])if(!present.has(address))knownLevels.delete(address);
+ notificationsArmed=true;
+}
+function enableNotifications(){
+ if(!("Notification" in window)){updateNotifyButton();return}
+ if(Notification.permission==="granted"){notificationsEnabled=true;updateNotifyButton();return}
+ if(Notification.permission==="denied"){notificationsEnabled=false;updateNotifyButton();return}
+ Notification.requestPermission().then(function(permission){
+  notificationsEnabled=permission==="granted";
+  updateNotifyButton();
+  if(notificationsEnabled){
+   try{new Notification("🔔 Notifiche attive",{body:"Ti avviserò quando un token entra in STRONG.",tag:"memecoin-notifications-enabled"})}catch(e){}
+  }
+ }).catch(function(){updateNotifyButton()});
+}
 
 function score(p,old){
  const liq=n(p.liquidity&&p.liquidity.usd),mc=n(p.marketCap||p.fdv),v1=n(p.volume&&p.volume.h1),v24=n(p.volume&&p.volume.h24);
@@ -169,6 +216,7 @@ async function refreshRealtimeAddresses(addresses){
   updateStats();
   document.getElementById("refresh").textContent=new Date().toLocaleTimeString("it-IT");
   setStatus("Live · Solana WS");
+  checkStrongNotifications(allPairs);
   render();
  }catch(e){
   setStatus("WS attivo · refresh dati in errore");
@@ -344,6 +392,7 @@ async function resolveBirthCandidates(){
    updateStats();
    document.getElementById("refresh").textContent=new Date().toLocaleTimeString("it-IT");
    setStatus("Live · Birth Radar · Solana WS");
+   checkStrongNotifications(allPairs);
    render();
   }
   if([...birthCandidates.values()].some(function(x){
@@ -354,7 +403,6 @@ async function resolveBirthCandidates(){
 
 function connectRealtimeSocket(){
  closeRealtimeSocket();
- if(!allPairs.length){setStatus("Live · attesa discovery");return}
  const generation=wsGeneration;
  const pairs=[...allPairs]
    .filter(function(p){return p.pairAddress})
@@ -470,7 +518,9 @@ async function discoverScan(){
   document.getElementById("strong").textContent=allPairs.filter(function(p){return p._level==="STRONG"}).length;
   document.getElementById("refresh").textContent=new Date().toLocaleTimeString("it-IT");
   document.getElementById("status").textContent="Live · discovery 30s · Birth Radar · 80 token";
+  checkStrongNotifications(allPairs);
   render();
+  connectRealtimeSocket();
  }catch(e){
   document.getElementById("status").textContent="Errore DexScreener";
   document.getElementById("grid").innerHTML='<div class="empty"><b>Impossibile leggere DexScreener.</b><br><br>'+esc(e.message)+'</div>';
@@ -496,6 +546,7 @@ async function monitorScan(){
   document.getElementById("strong").textContent=allPairs.filter(function(p){return p._level==="STRONG"}).length;
   document.getElementById("refresh").textContent=new Date().toLocaleTimeString("it-IT");
   document.getElementById("status").textContent="Live · fallback 10s · Solana WS";
+  checkStrongNotifications(allPairs);
   render();
  }catch(e){
   document.getElementById("status").textContent="Live · monitor in pausa";
@@ -504,6 +555,8 @@ async function monitorScan(){
 
 document.querySelectorAll(".filter").forEach(function(b){b.onclick=function(){document.querySelectorAll(".filter").forEach(function(x){x.classList.remove("active")});b.classList.add("active");currentFilter=b.dataset.filter;render()}});
 document.getElementById("search").oninput=function(e){currentQuery=e.target.value;render()};
+document.getElementById("notifyBtn").onclick=enableNotifications;
+updateNotifyButton();
 
 discoverScan();
 setInterval(discoverScan,DISCOVERY_MS);
