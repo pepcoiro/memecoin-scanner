@@ -316,6 +316,7 @@ def alert(p,level):
         f"🔥 VOLUME 1H: {n((p.get('volume') or {}).get('h1')):,.0f}",
         f"📊 VOLUME 24H: {n((p.get('volume') or {}).get('h24')):,.0f}",
         f"📈 PRICE: 1h {n(pc.get('h1')):+.1f}% | 6h {n(pc.get('h6')):+.1f}% | 24h {n(pc.get('h24')):+.1f}%",
+        "",f"🟣 JUPITER: {p.get('_jupiter',{}).get('status','UNVERIFIED')}",
         "","🎯 MAX PUNTATA TEORICA: {}".format(sol if sol>=1 else sol),
         "   USD stimati: {:.0f} | price impact teorico <=2%".format(usd),"","🛡️ SECURITY: PASS",f"🔗 {p.get('url','')}"])
 
