@@ -185,89 +185,61 @@ def gtoken(force=False):
         return None
 
 
-def security(p):
-    addr=(p.get("baseToken") or {}).get("address")
-    sym=(p.get("baseToken") or {}).get("symbol","?")
-    print(f"[GoPlus DEBUG] {sym} address={addr}")
-
+def security_batch(rows):
     tok=gtoken()
-    if not tok:
-        print(f"[GoPlus DEBUG] {sym} AUTH FAILED: no access token")
-        return {"status":"UNVERIFIED","bad":[]}
+    addrs=[]
+    for p in rows:
+        addr=(p.get("baseToken") or {}).get("address")
+        if addr and addr not in addrs:addrs.append(addr)
+    results={a:{"status":"UNVERIFIED","bad":[]} for a in addrs}
+    if not tok or not addrs:return results
 
-    print(f"[GoPlus DEBUG] {sym} AUTH OK")
-    h={"Authorization":tok}
     url="https://api.gopluslabs.io/api/v1/solana/token_security"
-
+    h={"Authorization":tok}
+    params={"contract_addresses":",".join(addrs)}
     try:
-        params={"contract_addresses":addr}
-        print(f"[GoPlus DEBUG] {sym} REQUEST: {url}")
-        print(f"[GoPlus DEBUG] {sym} PARAMS: {params}")
-
+        print(f"[GoPlus DEBUG] BATCH REQUEST: {len(addrs)} tokens")
+        print(f"[GoPlus DEBUG] BATCH PARAMS: {params}")
         r=S.get(url,params=params,headers=h,timeout=TIMEOUT)
-        print(f"[GoPlus DEBUG] {sym} HTTP STATUS: {r.status_code}")
-        print(f"[GoPlus DEBUG] {sym} RESPONSE: {r.text[:3000]}")
+        print(f"[GoPlus DEBUG] BATCH HTTP STATUS: {r.status_code}")
+        print(f"[GoPlus DEBUG] BATCH RESPONSE: {r.text[:5000]}")
 
         if r.status_code==401:
-            print(f"[GoPlus DEBUG] {sym} RETRYING AUTH")
+            print("[GoPlus DEBUG] BATCH RETRYING AUTH")
             tok=gtoken(True)
-            if not tok:
-                print(f"[GoPlus DEBUG] {sym} RETRY AUTH FAILED")
-                return {"status":"UNVERIFIED","bad":[]}
+            if not tok:return results
             h["Authorization"]=tok
             r=S.get(url,params=params,headers=h,timeout=TIMEOUT)
-            print(f"[GoPlus DEBUG] {sym} RETRY HTTP STATUS: {r.status_code}")
-            print(f"[GoPlus DEBUG] {sym} RETRY RESPONSE: {r.text[:3000]}")
+            print(f"[GoPlus DEBUG] BATCH RETRY HTTP STATUS: {r.status_code}")
+            print(f"[GoPlus DEBUG] BATCH RETRY RESPONSE: {r.text[:5000]}")
 
-        if r.status_code!=200:
-            print(f"[GoPlus DEBUG] {sym} NON-200 -> UNVERIFIED")
-            return {"status":"UNVERIFIED","bad":[]}
-
-        try:
-            payload=r.json()
-        except Exception as e:
-            print(f"[GoPlus DEBUG] {sym} JSON PARSE ERROR: {e}")
-            return {"status":"UNVERIFIED","bad":[]}
-
+        if r.status_code!=200:return results
+        payload=r.json()
         z=payload.get("result") or {}
-        print(f"[GoPlus DEBUG] {sym} RESULT TYPE: {type(z).__name__}")
-        if isinstance(z,dict):
-            print(f"[GoPlus DEBUG] {sym} RESULT KEYS: {list(z.keys())[:30]}")
+        if not isinstance(z,dict):return results
 
-        d=z.get(addr) if isinstance(z,dict) else None
-        if not d and isinstance(z,dict):
-            for k,v in z.items():
-                if str(k).lower()==addr.lower():
-                    d=v
-                    break
+        for addr in addrs:
+            d=z.get(addr)
+            if not d:
+                for k,v in z.items():
+                    if str(k).lower()==addr.lower():
+                        d=v;break
+            if not d:continue
 
-        if not d:
-            print(f"[GoPlus DEBUG] {sym} TOKEN DATA FOUND: NO")
-            return {"status":"UNVERIFIED","bad":[]}
+            bad=[]
+            for k,label in (("is_honeypot","honeypot"),("cannot_sell","cannot_sell"),("blacklist","blacklist"),("is_mintable","mintable"),("transfer_pausable","transfer_pausable")):
+                if str(d.get(k,"0")).lower() in ("1","true"):bad.append(label)
+            for k,label in (("buy_tax","buy_tax"),("sell_tax","sell_tax")):
+                try:
+                    if float(d.get(k,0) or 0)>.10:bad.append(label)
+                except Exception:pass
+            results[addr]={"status":"RISK" if bad else "PASS","bad":bad}
 
-        print(f"[GoPlus DEBUG] {sym} TOKEN DATA FOUND: YES")
-        print(f"[GoPlus DEBUG] {sym} TOKEN DATA: {str(d)[:3000]}")
-
-        bad=[]
-        for k,label in (("is_honeypot","honeypot"),("cannot_sell","cannot_sell"),("blacklist","blacklist"),("is_mintable","mintable"),("transfer_pausable","transfer_pausable")):
-            if str(d.get(k,"0")).lower() in ("1","true"):
-                bad.append(label)
-
-        for k,label in (("buy_tax","buy_tax"),("sell_tax","sell_tax")):
-            try:
-                if float(d.get(k,0) or 0)>.10:
-                    bad.append(label)
-            except Exception as e:
-                print(f"[GoPlus DEBUG] {sym} TAX PARSE ERROR {k}: {e}")
-
-        status="RISK" if bad else "PASS"
-        print(f"[GoPlus DEBUG] {sym} FINAL STATUS: {status} bad={bad}")
-        return {"status":status,"bad":bad}
-
+        return results
     except Exception as e:
-        print(f"[GoPlus DEBUG] {sym} EXCEPTION: {type(e).__name__}: {e}")
+        print(f"[GoPlus DEBUG] BATCH EXCEPTION: {type(e).__name__}: {e}")
         traceback.print_exc()
-        return {"status":"UNVERIFIED","bad":[]}
+        return results
 
 def alert(p,level):
     t=p.get("baseToken") or {};m=p["_m"];pc=p.get("priceChange") or {};usd,sol=max_position(p)
@@ -300,8 +272,10 @@ def main():
     rows=discover()
     if not rows:print("Nessun candidato.");return
     alerts=[]
+    secmap=security_batch(rows)
     for i,p in enumerate(rows,1):
-        sec=security(p);m=p["_m"];sym=(p.get("baseToken") or {}).get("symbol","?")
+        addr=(p.get("baseToken") or {}).get("address")
+        sec=secmap.get(addr,{"status":"UNVERIFIED","bad":[]});m=p["_m"];sym=(p.get("baseToken") or {}).get("symbol","?")
         p1=n((p.get("priceChange") or {}).get("h1"));p24=n((p.get("priceChange") or {}).get("h24"));b=m["bp"]*100
         print("#{:<2} {:<10} score={:>3} burst={:>4.1f}x buy={:>5.1f}% 1h={:+6.1f}% 24h={:+7.1f}% security={}".format(i,sym,p["_score"],m["burst"],b,p1,p24,sec["status"]))
         if sec["status"]!="PASS" or p1>60 or p24>150 or p1<=-30 or p24<=-50:continue
