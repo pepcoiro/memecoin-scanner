@@ -40,7 +40,7 @@ jobs:
 
       - name: Run scanner
         env:
-          SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL }}
+          HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scanner.py
