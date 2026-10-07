@@ -59,7 +59,7 @@ let allPairs=[], filter="all", query="";
 function n(x){const v=Number(x);return Number.isFinite(v)?v:0}
 function money(x){return new Intl.NumberFormat("it-IT",{notation:"compact",maximumFractionDigits:1}).format(n(x))}
 function pct(x){return (n(x)>=0?"+":"")+n(x).toFixed(1)+"%"}
-function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",""":"&quot;","'":"&#39;"}[m]))}
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(m){return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]})}
 function age(p){const c=n(p.pairCreatedAt);return c?Math.max(0,(Date.now()-c)/3600000):999999}
 function bp(p){const t=p.txns?.h1||{},b=n(t.buys),s=n(t.sells);return b+s?b/(b+s):0}
 function burst(p){const v1=n(p.volume?.h1),v24=n(p.volume?.h24);return v24?v1*24/v24:0}
