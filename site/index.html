@@ -24,12 +24,13 @@
 <div class="wrap">
 <div class="top"><div class="brand"><h1>MARKET SCANNER <span style="color:#8b5cf6">/ MULTI-ASSET</span></h1><p>Crypto + Stocks · realtime monitoring · momentum · volume · market data</p></div><div class="status"><i class="dot"></i><span id="status">Connessione a DexScreener…</span></div></div>
 <div class="stats"><div class="stat"><span>Coppie analizzate</span><strong id="pairs">—</strong></div><div class="stat"><span>Candidati</span><strong id="candidates">—</strong></div><div class="stat"><span>Strong</span><strong id="strong">—</strong></div><div class="stat"><span>Ultimo refresh</span><strong id="refresh">—</strong></div></div>
-<div class="market-tabs"><button class="market-tab active" data-market="crypto">🪙 CRYPTO</button><button class="market-tab" data-market="stocks">📈 STOCKS</button></div><div class="toolbar"><div class="filters"><button class="filter active" data-filter="all">Tutti</button><button class="filter" data-filter="strong">🔥 Strong</button><button class="filter" data-filter="interesting">🟢 Interesting</button><button class="filter" data-filter="watch">🟡 Watch</button><button id="freshFilter" class="filter" data-filter="fresh">🆕 &lt;24h</button></div><input id="search" class="search" placeholder="Cerca simbolo, nome o contract…"></div>
+<div class="market-tabs"><button class="market-tab active" data-market="crypto">🪙 CRYPTO</button><button class="market-tab" data-market="markets">📈 MARKETS</button></div><div class="toolbar"><div class="filters"><button class="filter active" data-filter="all">Tutti</button><button class="filter" data-filter="strong">🔥 Strong</button><button class="filter" data-filter="interesting">🟢 Interesting</button><button class="filter" data-filter="watch">🟡 Watch</button><button id="freshFilter" class="filter" data-filter="fresh">🆕 &lt;24h</button></div><input id="search" class="search" placeholder="Cerca simbolo, nome o contract…"></div>
 <div id="grid" class="grid"><div class="empty">Scansione DexScreener in corso…</div></div>
-<div class="footer">Crypto: DexScreener + Solana WebSocket · Stocks: TradingView scanner · Terminal per il trading crypto.</div>
+<div class="footer">Crypto: DexScreener + Solana WebSocket · Markets: Biquote WebSocket · Terminal per il trading crypto.</div>
 </div>
 
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.7/signalr.min.js"></script>
 <script>
 const API="https://api.dexscreener.com";
 const PROFILE_LIMIT=150;
@@ -40,15 +41,17 @@ const WS_MAX_PAIRS=120;
 const WS_REFRESH_DEBOUNCE_MS=700;
 const WS_RECONNECT_MS=5000;
 const FALLBACK_MONITOR_MS=10000;
-const STOCK_REFRESH_MS=15000;
-const TV_URL="https://scanner.tradingview.com/america/scan";
 const STATE_KEY="memecoin_scanner_v1";
 let allPairs=[];
 let currentFilter="all";
 let currentQuery="";
 let currentMarket="crypto";
-let stockPairs=[];
-let stockTimer=null;
+const MARKET_API="https://biquote.io/api";
+const MARKET_WS="https://biquote.io/hubs/tick";
+let marketPairs=[];
+let marketSymbols=[];
+let marketConnection=null;
+let marketReconnectTimer=null;
 let ws=null;
 let wsSubIds=new Map();
 let wsPairBySub=new Map();
@@ -109,7 +112,7 @@ async function discover(){
 }
 
 function render(){
- if(currentMarket==="stocks"){renderStocks();return}
+ if(currentMarket==="markets"){renderMarkets();return}
  let list=allPairs.filter(function(p){
   const q=currentQuery.toLowerCase(),text=(p.baseToken?.symbol||"")+" "+(p.baseToken?.name||"")+" "+(p.baseToken?.address||"");
   const hit=!q||text.toLowerCase().includes(q);
@@ -198,88 +201,133 @@ function closeRealtimeSocket(){
  wsTokenByPair=new Map();
 }
 
-async function discoverStocks(){
- const payload={
-  filter:[
-   {left:"close",operation:"nempty"},
-   {left:"volume",operation:"nempty"},
-   {left:"change",operation:"nempty"}
-  ],
-  options:{lang:"en"},
-  symbols:{query:{types:[]},tickers:[]},
-  columns:["name","description","close","change","change_abs","volume","relative_volume_10d_calc","market_cap_basic","Perf.W","Perf.1M"],
-  sort:{sortBy:"change",sortOrder:"desc",nullsFirst:false},
-  range:[0,150]
- };
- const r=await fetch(TV_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),cache:"no-store"});
- if(!r.ok)throw new Error("TradingView HTTP "+r.status);
- const j=await r.json();
- return (j.data||[]).map(function(row){
-  const d=row.d||[];
-  return {symbol:row.s||d[0]||"?",name:d[1]||row.s||"?",price:n(d[2]),change:n(d[3]),changeAbs:n(d[4]),volume:n(d[5]),relVolume:n(d[6]),marketCap:n(d[7]),week:n(d[8]),month:n(d[9])};
+async function discoverMarkets(){
+ const active=await fetch(MARKET_API+"/active",{cache:"no-store"}).then(function(r){
+  if(!r.ok)throw new Error("Biquote HTTP "+r.status);
+  return r.json();
+ });
+ const rows=(active||[]).filter(function(x){
+  const type=String(x.type||"");
+  return type!=="Crypto";
+ });
+ marketSymbols=[...new Set(rows.map(function(x){return x.name}).filter(Boolean))].slice(0,120);
+ if(!marketSymbols.length)return [];
+ const query=marketSymbols.map(function(s){return "symbols="+encodeURIComponent(s)}).join("&");
+ const ticks=await fetch(MARKET_API+"/latest?"+query,{cache:"no-store"}).then(function(r){
+  if(!r.ok)throw new Error("Biquote latest HTTP "+r.status);
+  return r.json();
+ });
+ return (ticks.items||ticks.data||ticks||[]).map(function(t){
+  return {
+   symbol:t.symbol||"?",
+   name:t.description||t.symbol||"?",
+   type:(rows.find(function(x){return x.name===t.symbol})||{}).type||"Market",
+   price:n(t.mid||t.last||t.price),
+   change:n(t.dayDiffPercent),
+   high:n(t.high),
+   low:n(t.low),
+   spread:n(t.spread),
+   timestamp:t.timestamp||null,
+   marketState:t.marketState||"open"
+  };
  }).filter(function(x){return x.price>0});
 }
 
-function stockScore(s){
+function marketScore(s){
+ const ch=s.change,range=s.price?(s.high-s.low)/s.price*100:0,spread=s.price?s.spread/s.price*100:0;
  let v=0;
- const ch=s.change,rv=s.relVolume,mc=s.marketCap,vol=s.volume,w=s.week,m=s.month;
- if(ch>=10)v+=25;else if(ch>=5)v+=20;else if(ch>=3)v+=16;else if(ch>=1)v+=10;else if(ch>0)v+=5;else if(ch<=-5)v-=10;
- if(rv>=5)v+=25;else if(rv>=3)v+=20;else if(rv>=2)v+=15;else if(rv>=1.5)v+=10;else if(rv>=1)v+=5;
- if(vol>=10000000)v+=15;else if(vol>=2000000)v+=12;else if(vol>=500000)v+=9;else if(vol>=100000)v+=5;
- if(mc>0&&mc<=500000000)v+=15;else if(mc<=2000000000)v+=11;else if(mc<=10000000000)v+=7;else v+=4;
- if(w>=15&&w<=80)v+=10;else if(w>0)v+=5;else if(w<-15)v-=5;
- if(m>=20&&m<=150)v+=10;else if(m>0)v+=4;else if(m<-25)v-=7;
- if(ch>30)v-=12;
- if(rv>15)v-=10;
+ const absCh=Math.abs(ch);
+ if(ch>=3)v+=25;else if(ch>=1.5)v+=20;else if(ch>=.75)v+=15;else if(ch>0)v+=8;else if(ch<=-3)v-=10;
+ if(range>=5)v+=25;else if(range>=3)v+=20;else if(range>=1.5)v+=15;else if(range>=.75)v+=9;else v+=4;
+ if(spread<=.03)v+=15;else if(spread<=.08)v+=10;else if(spread<=.2)v+=5;else v-=8;
+ if(absCh>=.5&&absCh<=8)v+=15;else if(absCh>0)v+=5;
+ if(s.type==="Commodity"||s.type==="Index"||s.type==="Stock")v+=10;else if(s.type==="Forex")v+=7;
+ if(ch>10)v-=10;
  return Math.max(0,Math.min(100,Math.round(v)));
 }
 
-function enrichStocks(rows){
+function enrichMarkets(rows){
  return rows.map(function(s){
-  s._m={score:stockScore(s),burst:s.relVolume||0,accel:0,hasAccel:false,bp:0};
+  s._m={score:marketScore(s),burst:0,accel:0,hasAccel:false,bp:0};
   s._level=s._m.score>=75?"STRONG":(s._m.score>=60?"INTERESTING":(s._m.score>=45?"WATCH":""));
   return s;
  }).filter(function(s){return !!s._level});
 }
 
-async function scanStocks(){
- if(currentMarket!=="stocks")return;
- setStatus("Aggiornamento TradingView…");
+function upsertMarketTick(tick){
+ const i=marketPairs.findIndex(function(x){return x.symbol===tick.symbol});
+ if(i===-1)return;
+ const row=marketPairs[i];
+ const next=Object.assign({},row,{
+  price:n(tick.mid||tick.last||tick.price)||row.price,
+  change:n(tick.dayDiffPercent),
+  high:n(tick.high)||row.high,
+  low:n(tick.low)||row.low,
+  spread:n(tick.spread)||row.spread,
+  timestamp:tick.timestamp||row.timestamp,
+  marketState:tick.marketState||row.marketState
+ });
+ marketPairs[i]=enrichMarkets([next])[0]||next;
+ marketPairs.sort(function(a,b){return b._m.score-a._m.score});
+ updateStats();
+ document.getElementById("refresh").textContent=new Date().toLocaleTimeString("it-IT");
+ render();
+}
+
+async function connectMarketStream(){
+ if(marketConnection){try{await marketConnection.stop()}catch(e){}}
+ if(!window.signalR)throw new Error("SignalR client non disponibile");
+ marketConnection=new signalR.HubConnectionBuilder().withUrl(MARKET_WS).withAutomaticReconnect().build();
+ marketConnection.on("ReceiveTick",function(tick){
+  if(currentMarket==="markets")upsertMarketTick(tick);
+ });
+ marketConnection.onreconnecting(function(){setStatus("Markets · riconnessione…")});
+ marketConnection.onreconnected(function(){setStatus("Live · Markets WebSocket")});
+ await marketConnection.start();
+ if(marketSymbols.length)await marketConnection.invoke("Subscribe",marketSymbols);
+ setStatus("Live · Markets WebSocket");
+}
+
+async function scanMarkets(){
+ if(currentMarket!=="markets")return;
+ setStatus("Connessione Markets…");
  try{
-  stockPairs=enrichStocks(await discoverStocks());
-  document.getElementById("pairs").textContent=stockPairs.length;
-  document.getElementById("candidates").textContent=stockPairs.length;
-  document.getElementById("strong").textContent=stockPairs.filter(function(s){return s._level==="STRONG"}).length;
+  marketPairs=enrichMarkets(await discoverMarkets());
+  document.getElementById("pairs").textContent=marketPairs.length;
+  updateStats();
   document.getElementById("refresh").textContent=new Date().toLocaleTimeString("it-IT");
-  setStatus("Live · TradingView Stocks");
   render();
+  await connectMarketStream();
  }catch(e){
-  setStatus("Errore TradingView");
-  if(!stockPairs.length)document.getElementById("grid").innerHTML='<div class="empty"><b>Impossibile leggere il mercato azionario.</b><br><br>'+esc(e.message)+'</div>';
+  setStatus("Errore Markets");
+  if(!marketPairs.length)document.getElementById("grid").innerHTML='<div class="empty"><b>Impossibile leggere i mercati.</b><br><br>'+esc(e.message)+'</div>';
  }
 }
 
-function startStockMonitor(){
- if(stockTimer)clearInterval(stockTimer);
- stockTimer=setInterval(function(){if(currentMarket==="stocks")scanStocks()},STOCK_REFRESH_MS);
+function stopMarketStream(){
+ if(marketReconnectTimer){clearTimeout(marketReconnectTimer);marketReconnectTimer=null}
+ if(marketConnection){marketConnection.stop().catch(function(){});marketConnection=null}
 }
 
-function renderStocks(){
- let list=stockPairs.filter(function(s){
-  const q=currentQuery.toLowerCase(),text=(s.symbol+" "+s.name).toLowerCase();
+function renderMarkets(){
+ let list=marketPairs.filter(function(s){
+  const q=currentQuery.toLowerCase();
+  const text=(s.symbol+" "+s.name+" "+s.type).toLowerCase();
   const hit=!q||text.includes(q);
-  const f=currentFilter==="all"||(currentFilter==="strong"&&s._level==="STRONG")||(currentFilter==="interesting"&&s._level==="INTERESTING")||(currentFilter==="watch"&&s._level==="WATCH")||(currentFilter==="fresh"&&s.change>=5);
+  const f=currentFilter==="all"||
+   (currentFilter==="strong"&&s._level==="STRONG")||
+   (currentFilter==="interesting"&&s._level==="INTERESTING")||
+   (currentFilter==="watch"&&s._level==="WATCH");
   return hit&&f;
  }).sort(function(a,b){return b._m.score-a._m.score});
- if(!list.length){document.getElementById("grid").innerHTML='<div class="empty">Nessuna azione corrisponde ai filtri.</div>';return}
+ if(!list.length){document.getElementById("grid").innerHTML='<div class="empty">Nessun mercato corrisponde ai filtri.</div>';return}
  document.getElementById("grid").innerHTML=list.map(function(s){
   const hot=s._level==="STRONG";
-  const tv=s.symbol.replace(":","-");
-  return '<article class="card'+(hot?" hot":"")+'"><div class="head"><div class="token"><div class="avatar">'+esc(s.symbol.split(":").pop().slice(0,2))+'</div><div><div class="sym">'+esc(s.symbol.split(":").pop())+'</div><div class="name" title="'+esc(s.name)+'">'+esc(s.name)+'</div></div></div><div class="score"><b>'+s._m.score+'</b><small>score</small></div></div>'+
-  '<div class="badges"><span class="badge '+(hot?"red":(s._level==="WATCH"?"yellow":"green"))+'">'+(hot?"🔥 STRONG":(s._level==="WATCH"?"🟡 WATCH":"🟢 INTERESTING"))+'</span><span class="badge">STOCK USA</span></div>'+
-  '<div class="metrics"><div class="metric"><span>Prezzo</span><strong>$'+money(s.price)+'</strong></div><div class="metric"><span>Market Cap</span><strong>$'+money(s.marketCap)+'</strong></div><div class="metric"><span>Volume</span><strong>$'+money(s.volume)+'</strong></div></div>'+
-  '<div class="rows"><div class="row"><span>Oggi</span><b>'+pct(s.change)+'</b></div><div class="row"><span>Relative volume</span><b>'+s.relVolume.toFixed(2)+'x</b></div><div class="row"><span>1 settimana</span><b>'+pct(s.week)+'</b></div><div class="row"><span>1 mese</span><b>'+pct(s.month)+'</b></div></div>'+
-  '<div class="actions"><a class="buy" href="https://www.tradingview.com/symbols/'+encodeURIComponent(tv)+'/" target="_blank" rel="noopener">📈 APRI TRADINGVIEW</a></div></article>';
+  return '<article class="card'+(hot?" hot":"")+'"><div class="head"><div class="token"><div class="avatar">'+esc(s.symbol.slice(0,2))+'</div><div><div class="sym">'+esc(s.symbol)+'</div><div class="name" title="'+esc(s.name)+'">'+esc(s.name)+'</div></div></div><div class="score"><b>'+s._m.score+'</b><small>score</small></div></div>'+
+  '<div class="badges"><span class="badge '+(hot?"red":(s._level==="WATCH"?"yellow":"green"))+'">'+(hot?"🔥 STRONG":(s._level==="WATCH"?"🟡 WATCH":"🟢 INTERESTING"))+'</span><span class="badge">'+esc(s.type)+'</span><span class="badge">'+(s.marketState==="open"?"LIVE":"CLOSED")+'</span></div>'+
+  '<div class="metrics"><div class="metric"><span>Prezzo</span><strong>'+money(s.price)+'</strong></div><div class="metric"><span>Variazione</span><strong>'+pct(s.change)+'</strong></div><div class="metric"><span>Range</span><strong>'+((s.price?(s.high-s.low)/s.price*100:0)).toFixed(2)+'%</strong></div></div>'+
+  '<div class="rows"><div class="row"><span>High / Low</span><b>'+money(s.high)+' / '+money(s.low)+'</b></div><div class="row"><span>Spread</span><b>'+money(s.spread)+'</b></div><div class="row"><span>Direzione</span><b>'+((s.change>0)?"UP":(s.change<0?"DOWN":"FLAT"))+'</b></div><div class="row"><span>Aggiornamento</span><b>'+esc(s.timestamp?new Date(s.timestamp).toLocaleTimeString("it-IT"):"—")+'</b></div></div>'+
+  '</article>';
  }).join("");
 }
 
@@ -415,12 +463,12 @@ document.querySelectorAll(".market-tab").forEach(function(b){
   document.querySelectorAll(".filter").forEach(function(x){x.classList.remove("active")});
   document.querySelector('.filter[data-filter="all"]').classList.add("active");
   const fresh=document.getElementById("freshFilter");
-  if(fresh)fresh.innerHTML=currentMarket==="stocks"?"⚡ Momentum":"🆕 &lt;24h";
-  if(currentMarket==="stocks"){
+  if(fresh)fresh.innerHTML=currentMarket==="markets"?"⚡ Momentum":"🆕 &lt;24h";
+  if(currentMarket==="markets"){
    closeRealtimeSocket();
-   scanStocks();
+   scanMarkets();
   }else{
-   stockPairs=[];
+   marketPairs=[];
    discoverScan();
   }
  };
@@ -430,7 +478,6 @@ document.getElementById("search").oninput=function(e){currentQuery=e.target.valu
 
 discoverScan();
 setInterval(discoverScan,DISCOVERY_MS);
-startStockMonitor();
 </script>
 </body>
 </html>
