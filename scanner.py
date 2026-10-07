@@ -95,6 +95,7 @@ WALLET_BUDGET_FRACTION = 0.50
 SOL_RESERVE = 0.0
 LIQ_BUDGET_FRACTION = 0.01
 MAX_EXECUTION_PRICE_IMPACT = 0.02
+JUPITER_TRIGGER_MIN_USD = 10.0
 MAX_ENTRY_SLIPPAGE_BPS = 500
 DEFAULT_USD_TO_EUR = 0.892  # fallback; refreshed from ECB when available
 NATIVE_SYMBOLS = {"solana": "SOL"}
@@ -1457,6 +1458,17 @@ def calculate_entry_budget(p,wallet_sol,sol_usd):
     else:
         liq_fraction=0.05
 
+    # Jupiter Trigger V2 enforces a $10 minimum per price order.
+    # The smallest planned order is the 10% runner after TP3 (+90%):
+    # 0.10 * 1.90 = 0.19 of the original entry value.
+    min_entry_for_full_ladder = JUPITER_TRIGGER_MIN_USD / (RUNNER_FRACTION * (1.0 + TP3_PCT))
+    if wallet_cap_usd < min_entry_for_full_ladder:
+        return {
+            "usd":0.0,
+            "sol":0.0,
+            "reason":f"saldo insufficiente per la ladder Jupiter: servono almeno ${min_entry_for_full_ladder:.2f} di BUY"
+        }
+
     # Market cap is an eligibility constraint here, not an invented fixed-euro
     # position cap. The scanner already requires MIN_MC <= MC <= MAX_MC.
     caps=[wallet_cap_usd, liq*liq_fraction, impact_cap_usd]
@@ -1485,7 +1497,14 @@ def _token_balance_atomic(pubkey,mint):
     return total,decimals
 
 def _order_state(order):
-    return str(order.get("state") or order.get("status") or "").lower()
+    return str(
+        order.get("orderState")
+        or order.get("rawState")
+        or order.get("state")
+        or order.get("status")
+        or order.get("displayState")
+        or ""
+    ).lower()
 
 def _next_exit(position,wallet,jwt,current_price):
     step=int(position.get("exit_step",0))
@@ -1598,7 +1617,11 @@ def manage_open_positions():
         return
 
     wallet=_solana_keypair()
-    jwt=trigger_jwt(wallet)
+    try:
+        jwt=trigger_jwt(wallet)
+    except Exception as e:
+        print(f"[TRADING] Impossibile autenticarsi a Jupiter Trigger: {type(e).__name__}: {e}")
+        return
 
     for mint,position in list(positions.items()):
         try:
@@ -1670,12 +1693,12 @@ def auto_trade_best_candidate(rows):
         liq=num((p.get("liquidity") or {}).get("usd"))
         mc=num(p.get("marketCap") or p.get("fdv"))
 
-        # Automatic BUY requires an actual acceleration signal; score alone
-        # is never sufficient. This is deliberately tighter than Telegram.
+        # Automatic BUY requires fresh momentum, but does not require
+        # an artificially high 75/100 score.
         acceleration_ok=(has_accel and accel>=1.15) or burst>=2.0
         if not acceleration_ok:
             continue
-        if score<75:
+        if score<60:
             continue
         if p1>ALERT_MAX_P1 or p24>ALERT_MAX_P24:
             continue
@@ -1713,6 +1736,75 @@ def auto_trade_best_candidate(rows):
     )
     execute_entry(best)
 
+
+def telegram_send(text, pair_address=None):
+    """Send a Telegram alert and print the exact Telegram error if it fails."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print(
+            "[Telegram DEBUG] CONFIG MANCANTE | "
+            f"token_present={bool(TELEGRAM_BOT_TOKEN)} | "
+            f"chat_id_present={bool(TELEGRAM_CHAT_ID)}"
+        )
+        return False
+
+    alerts = _load_telegram_alerts()
+    now = time.time()
+
+    if pair_address:
+        last = num(alerts.get(pair_address))
+        if last and now - last < 3600:
+            print(
+                f"[Telegram DEBUG] DUPLICATO BLOCCATO | "
+                f"pair={pair_address} | age_min={(now-last)/60:.1f}"
+            )
+            return False
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "disable_web_page_preview": False,
+    }
+
+    try:
+        print(
+            f"[Telegram DEBUG] POST sendMessage | "
+            f"chat_id={TELEGRAM_CHAT_ID!r} | text_len={len(text)}"
+        )
+
+        r = session.post(url, json=payload, timeout=TIMEOUT)
+
+        print(f"[Telegram DEBUG] HTTP {r.status_code}")
+        print(f"[Telegram DEBUG] Response: {r.text[:1000]}")
+
+        if r.status_code != 200:
+            return False
+
+        try:
+            body = r.json()
+        except Exception:
+            print("[Telegram DEBUG] Risposta non JSON.")
+            return False
+
+        if not body.get("ok"):
+            print(f"[Telegram DEBUG] Telegram API ok=false | body={body}")
+            return False
+
+        if pair_address:
+            alerts[pair_address] = now
+            cutoff = now - 7 * 86400
+            alerts = {
+                k: v for k, v in alerts.items()
+                if num(v) >= cutoff
+            }
+            _save_telegram_alerts(alerts)
+
+        print("[Telegram] Alert inviato.")
+        return True
+
+    except Exception as e:
+        print(f"[Telegram DEBUG] Exception: {type(e).__name__}: {e}")
+        return False
 
 def build_telegram_alert(p, sec, smart_bonus_value, ranked, alert_level="INTERESTING"):
     b = p.get("baseToken") or {}
@@ -1980,14 +2072,21 @@ def main():
             )
 
             print(f"[Telegram] Invio {level} → {p.get('baseToken', {}).get('symbol', '?')}")
-            ok = telegram_send(alert_text, pair_address=pair_address)
+            try:
+                ok = telegram_send(alert_text, pair_address=pair_address)
+            except Exception as e:
+                ok = False
+                print(f"[Telegram] ERRORE INVIO: {type(e).__name__}: {e}")
 
             if not ok:
-                print("[Telegram] FALLITO: controlla il debug HTTP/API sopra.")
+                print("[Telegram] FALLITO: continuo comunque con il trading.")
     else:
         print("\nNessun alert Telegram in questa scansione.")
 
-    auto_trade_best_candidate(rows)
+    try:
+        auto_trade_best_candidate(rows)
+    except Exception as e:
+        print(f"[TRADING] ERRORE BUY: {type(e).__name__}: {e}")
 
 if __name__=="__main__":
     try:
