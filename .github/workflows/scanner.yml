@@ -62,4 +62,6 @@ jobs:
             scanner_state.json
             wallet_state.json
             telegram_alert_state.json
+            alert_outcomes.json
+            scanner_analytics.json
           key: scanner-state-${{ github.run_id }}
