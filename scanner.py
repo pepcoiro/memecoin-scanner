@@ -5,7 +5,8 @@ DIR=os.path.dirname(os.path.abspath(__file__))
 STATE=os.path.join(DIR,"scanner_state.json"); TGSTATE=os.path.join(DIR,"telegram_alert_state.json")
 CHAIN="solana"; MIN_LIQ=20000; MIN_MC=20000; MAX_MC=10000000; MIN_VOL24=20000; TOP_N=15
 BOT=os.getenv("TELEGRAM_BOT_TOKEN","").strip(); CHAT=os.getenv("TELEGRAM_CHAT_ID","").strip()
-SOLANA_RPC=os.getenv("SOLANA_RPC_URL","").strip() or "https://api.mainnet-beta.solana.com"
+HELIUS_API_KEY=os.getenv("HELIUS_API_KEY","").strip()
+SOLANA_RPC=os.getenv("SOLANA_RPC_URL","").strip() or (f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else "https://api.mainnet-beta.solana.com")
 S=requests.Session(); S.headers.update({"User-Agent":"MemecoinScanner/4.0"})
 
 def n(x):
