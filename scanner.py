@@ -95,7 +95,6 @@ WALLET_BUDGET_FRACTION = 0.50
 SOL_RESERVE = 0.0
 LIQ_BUDGET_FRACTION = 0.01
 MAX_EXECUTION_PRICE_IMPACT = 0.02
-JUPITER_TRIGGER_MIN_USD = 10.0
 MAX_ENTRY_SLIPPAGE_BPS = 500
 DEFAULT_USD_TO_EUR = 0.892  # fallback; refreshed from ECB when available
 NATIVE_SYMBOLS = {"solana": "SOL"}
@@ -1457,17 +1456,6 @@ def calculate_entry_budget(p,wallet_sol,sol_usd):
         liq_fraction=0.04
     else:
         liq_fraction=0.05
-
-    # Jupiter Trigger V2 enforces a $10 minimum per price order.
-    # The smallest planned order is the 10% runner after TP3 (+90%):
-    # 0.10 * 1.90 = 0.19 of the original entry value.
-    min_entry_for_full_ladder = JUPITER_TRIGGER_MIN_USD / (RUNNER_FRACTION * (1.0 + TP3_PCT))
-    if wallet_cap_usd < min_entry_for_full_ladder:
-        return {
-            "usd":0.0,
-            "sol":0.0,
-            "reason":f"saldo insufficiente per la ladder Jupiter: servono almeno ${min_entry_for_full_ladder:.2f} di BUY"
-        }
 
     # Market cap is an eligibility constraint here, not an invented fixed-euro
     # position cap. The scanner already requires MIN_MC <= MC <= MAX_MC.
