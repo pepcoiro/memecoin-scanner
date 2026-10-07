@@ -24,20 +24,19 @@
 <div class="wrap">
 <div class="top"><div class="brand"><h1>MEMECOIN SCANNER <span style="color:#8b5cf6">/ SOLANA</span></h1><p>DexScreener discovery · Solana WebSocket · momentum · liquidity · buy pressure</p></div><div class="status"><i class="dot"></i><span id="status">Connessione a DexScreener…</span></div></div>
 <div class="stats"><div class="stat"><span>Coppie analizzate</span><strong id="pairs">—</strong></div><div class="stat"><span>Candidati</span><strong id="candidates">—</strong></div><div class="stat"><span>Strong</span><strong id="strong">—</strong></div><div class="stat"><span>Ultimo refresh</span><strong id="refresh">—</strong></div></div>
-<div class="toolbar"><div class="filters"><button class="filter active" data-filter="all">Tutti</button><button class="filter" data-filter="strong">🔥 Strong</button><button class="filter" data-filter="interesting">🟢 Interesting</button><button class="filter" data-filter="watch">🟡 Watch</button><button id="freshFilter" class="filter" data-filter="fresh">🆕 &lt;24h</button></div><input id="search" class="search" placeholder="Cerca simbolo, nome o contract…"></div>
+<div class="toolbar"><div class="filters"><button class="filter active" data-filter="all">Tutti</button><button class="filter" data-filter="strong">🔥 Strong</button><button class="filter" data-filter="interesting">🟢 Interesting</button><button class="filter" data-filter="watch">🟡 Watch</button><button class="filter" data-filter="birth">🆕 Birth</button><button id="freshFilter" class="filter" data-filter="fresh">🆕 &lt;24h</button></div><input id="search" class="search" placeholder="Cerca simbolo, nome o contract…"></div>
 <div id="grid" class="grid"><div class="empty">Scansione DexScreener in corso…</div></div>
 <div class="footer">DexScreener discovery + realtime Solana WebSocket · Terminal per il trading.</div>
 </div>
 
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.7/signalr.min.js"></script>
 <script>
 const API="https://api.dexscreener.com";
 const PROFILE_LIMIT=150;
 const BATCH=25;
 const DISCOVERY_MS=30000;
 const WS_URL="wss://api.mainnet.solana.com/";
-const WS_MAX_PAIRS=120;
+const WS_MAX_PAIRS=80;
 const WS_REFRESH_DEBOUNCE_MS=700;
 const WS_RECONNECT_MS=5000;
 const FALLBACK_MONITOR_MS=10000;
@@ -49,6 +48,10 @@ let ws=null;
 let wsSubIds=new Map();
 let wsPairBySub=new Map();
 let wsTokenByPair=new Map();
+let wsBirthBySub=new Map();
+const birthCandidates=new Map();
+const birthSeenSignatures=new Set();
+let birthResolveTimer=null;
 let wsPending=new Set();
 let wsFlushTimer=null;
 let wsReconnectTimer=null;
@@ -88,9 +91,9 @@ function score(p,old){
  if(old[p.pairAddress]&&n(old[p.pairAddress].v1)){has=true;acc=v1/n(old[p.pairAddress].v1);if(acc>=3)s+=7;else if(acc>=2)s+=5;else if(acc>=1.5)s+=3;else if(acc<.65)s-=2}
  return {score:Math.max(0,Math.min(100,Math.round(s))),burst:bu,accel:acc,hasAccel:has,bp:pressure};
 }
-function enrich(p,old){const m=score(p,old);let level="";if(m.score>=75&&(m.burst>=2||m.hasAccel))level="STRONG";else if(m.score>=60&&(m.burst>=1.5||m.bp>=.55))level="INTERESTING";else if(m.score>=45&&(m.burst>=1.0||m.bp>=.48))level="WATCH";p._m=m;p._level=level;return p}
+function enrich(p,old){const m=score(p,old),p1=n(p.priceChange&&p.priceChange.h1),p24=n(p.priceChange&&p.priceChange.h24);let level="";if(m.score>=75&&(m.burst>=2||m.hasAccel))level="STRONG";else if(m.score>=60&&(m.burst>=1.5||m.bp>=.55))level="INTERESTING";else if(m.score>=45&&(m.burst>=1.0||m.bp>=.48))level="WATCH";else if(m.score>=35&&(p24>60||p1>30||m.burst>=1.0||m.bp>=.48))level="WATCH";p._m=m;p._level=level;return p}
 function passes(p){const liq=n(p.liquidity&&p.liquidity.usd),mc=n(p.marketCap||p.fdv),v24=n(p.volume&&p.volume.h24);return liq>=20000&&mc>=20000&&mc<=10000000&&v24>=20000}
-function classify(p){const p1=n(p.priceChange&&p.priceChange.h1),p24=n(p.priceChange&&p.priceChange.h24);return !(p1<=-40||p24<=-70)&&!!p._level}
+function classify(p){const p1=n(p.priceChange&&p.priceChange.h1),p24=n(p.priceChange&&p.priceChange.h24),addr=p.baseToken?.address;return !(p1<=-40||p24<=-70)&&(!!p._level||birthCandidates.has(addr))}
 
 async function getJSON(url){const r=await fetch(url,{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);return r.json()}
 async function discover(){
@@ -109,7 +112,7 @@ function render(){
  let list=allPairs.filter(function(p){
   const q=currentQuery.toLowerCase(),text=(p.baseToken?.symbol||"")+" "+(p.baseToken?.name||"")+" "+(p.baseToken?.address||"");
   const hit=!q||text.toLowerCase().includes(q);
-  const f=currentFilter==="all"||(currentFilter==="strong"&&p._level==="STRONG")||(currentFilter==="interesting"&&p._level==="INTERESTING")||(currentFilter==="watch"&&p._level==="WATCH")||(currentFilter==="fresh"&&age(p)<=24);
+  const f=currentFilter==="all"||(currentFilter==="strong"&&p._level==="STRONG")||(currentFilter==="interesting"&&p._level==="INTERESTING")||(currentFilter==="watch"&&p._level==="WATCH")||(currentFilter==="birth"&&!!p._birth)||(currentFilter==="fresh"&&age(p)<=24);
   return hit&&f;
  }).sort(function(a,b){return b._m.score-a._m.score});
  if(!list.length){document.getElementById("grid").innerHTML='<div class="empty">Nessun token corrisponde ai filtri.</div>';return}
@@ -117,7 +120,7 @@ function render(){
   const t=p.baseToken||{},m=p._m||{},a=age(p),hot=p._level==="STRONG";
   const initials=(t.symbol||"?").slice(0,2).toUpperCase();
   return '<article class="card'+(hot?" hot":"")+'"><div class="head"><div class="token"><div class="avatar">'+esc(initials)+'</div><div><div class="sym">'+esc(t.symbol||"?")+'</div><div class="name" title="'+esc(t.name||"")+'">'+esc(t.name||"")+'</div></div></div><div class="score"><b>'+m.score+'</b><small>score</small></div></div>'+
-  '<div class="badges">'+(p._level?'<span class="badge '+(hot?"red":(p._level==="WATCH"?"yellow":"green"))+'">'+(hot?"🔥 STRONG":(p._level==="WATCH"?"🟡 WATCH":"🟢 INTERESTING"))+'</span>':'')+(a<=24?'<span class="badge yellow">🆕 '+a.toFixed(1)+'h</span>':'')+'<span class="badge">'+esc(p.dexId||"?")+'</span></div>'+
+  '<div class="badges">'+(p._level?'<span class="badge '+(hot?"red":(p._level==="WATCH"?"yellow":"green"))+'">'+(hot?"🔥 STRONG":(p._level==="WATCH"?"🟡 WATCH":"🟢 INTERESTING"))+'</span>':'')+(p._birth?'<span class="badge green">🆕 '+(p._birth.source==="pumpfun"?"PUMP.FUN":"RAYDIUM")+'</span>':'')+(n(p.priceChange&&p.priceChange.h1)>60||n(p.priceChange&&p.priceChange.h24)>150?'<span class="badge red">🔥 HOT</span>':'')+(a<=24?'<span class="badge yellow">🆕 '+a.toFixed(1)+'h</span>':'')+'<span class="badge">'+esc(p.dexId||"?")+'</span></div>'+
   '<div class="metrics"><div class="metric"><span>Liquidity</span><strong>$'+money(p.liquidity&&p.liquidity.usd)+'</strong></div><div class="metric"><span>Market Cap</span><strong>$'+money(p.marketCap||p.fdv)+'</strong></div><div class="metric"><span>Vol 1h</span><strong>$'+money(p.volume&&p.volume.h1)+'</strong></div></div>'+
   '<div class="rows"><div class="row"><span>Volume burst</span><b>'+m.burst.toFixed(2)+'x</b></div><div class="row"><span>Buy pressure</span><b>'+(m.bp*100).toFixed(1)+'%</b></div><div class="row"><span>Accelerazione</span><b>'+(m.hasAccel?m.accel.toFixed(2)+"x":"N/D")+'</b></div><div class="row"><span>Price 1h / 24h</span><b>'+pct(p.priceChange&&p.priceChange.h1)+' / '+pct(p.priceChange&&p.priceChange.h24)+'</b></div></div>'+
   '<div class="actions"><a class="buy" href="'+terminal(t.address||"")+'" target="_blank" rel="noopener">🟣 APRI TERMINAL</a><a class="dex" href="'+esc(p.url||"#")+'" target="_blank" rel="noopener">DEX</a></div></article>';
@@ -192,6 +195,162 @@ function closeRealtimeSocket(){
  wsSubIds=new Map();
  wsPairBySub=new Map();
  wsTokenByPair=new Map();
+ wsBirthBySub=new Map();
+}
+
+const SOLANA_RPC_HTTP="https://api.mainnet.solana.com";
+const BIRTH_PROGRAMS={
+ pumpfun:"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+ raydium_launchlab:"LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj"
+};
+const STABLE_MINTS=new Set([
+ "So11111111111111111111111111111111111111112",
+ "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+ "Es9vMFrzaCERmJfrF4H2FYD4Y6G7S2M8xXxQ8YQYQYQYQ"
+]);
+
+async function solanaRpc(method,params){
+ const r=await fetch(SOLANA_RPC_HTTP,{
+  method:"POST",
+  headers:{"Content-Type":"application/json"},
+  body:JSON.stringify({jsonrpc:"2.0",id:Date.now(),method:method,params:params}),
+  cache:"no-store"
+ });
+ if(!r.ok)throw new Error("Solana RPC HTTP "+r.status);
+ const j=await r.json();
+ if(j.error)throw new Error(j.error.message||"Solana RPC error");
+ return j.result;
+}
+
+function extractPubkey(x){
+ if(!x)return "";
+ if(typeof x==="string")return x;
+ return x.pubkey||"";
+}
+
+function extractBirthMints(tx,source){
+ const out=new Set();
+ function walk(v,depth){
+  if(!v||depth>9)return;
+  if(Array.isArray(v)){for(const x of v)walk(x,depth+1);return}
+  if(typeof v!=="object")return;
+  const parsed=v.parsed;
+  if(parsed&&typeof parsed==="object"){
+   const type=String(parsed.type||"").toLowerCase();
+   const mint=parsed.info&&parsed.info.mint;
+   if(mint&&type.includes("initializemint"))out.add(mint);
+  }
+  for(const k of Object.keys(v)){
+   if(k==="returnData"||k==="logMessages")continue;
+   walk(v[k],depth+1);
+  }
+ }
+ walk(tx.transaction?.message?.instructions,0);
+ walk(tx.meta?.innerInstructions,0);
+ for(const b of (tx.meta?.postTokenBalances||[]))if(b.mint)out.add(b.mint);
+ if(source==="pumpfun"){
+  const keys=(tx.transaction?.message?.accountKeys||[]).map(extractPubkey);
+  if(keys[1])out.add(keys[1]);
+ }
+ for(const mint of [...out])if(!mint||STABLE_MINTS.has(mint))out.delete(mint);
+ return [...out];
+}
+
+function birthLogMatches(source,logs){
+ const joined=(logs||[]).join(" ");
+ if(source==="pumpfun")return joined.includes("InitializeMint2")||joined.includes("Instruction: Create");
+ if(source==="raydium_launchlab")return joined.includes("Instruction: Initialize");
+ return false;
+}
+
+function scheduleBirthResolve(){
+ if(birthResolveTimer)return;
+ birthResolveTimer=setTimeout(function(){
+  birthResolveTimer=null;
+  resolveBirthCandidates();
+ },800);
+}
+
+function registerBirthMint(mint,source,signature){
+ if(!mint)return;
+ const old=birthCandidates.get(mint);
+ birthCandidates.set(mint,Object.assign(
+  {mint:mint,source:source,firstSeen:Date.now(),signature:signature,resolved:false},
+  old||{}
+ ));
+ scheduleBirthResolve();
+}
+
+async function processBirthTransaction(source,signature,logs){
+ if(!signature||birthSeenSignatures.has(signature)||!birthLogMatches(source,logs))return;
+ birthSeenSignatures.add(signature);
+ if(birthSeenSignatures.size>5000){
+  const first=birthSeenSignatures.values().next().value;
+  if(first)birthSeenSignatures.delete(first);
+ }
+ let tx=null;
+ for(let i=0;i<3&&!tx;i++){
+  try{
+   tx=await solanaRpc("getTransaction",[signature,{
+    encoding:"jsonParsed",
+    commitment:"confirmed",
+    maxSupportedTransactionVersion:0
+   }]);
+  }catch(e){}
+  if(!tx&&i<2)await new Promise(function(resolve){setTimeout(resolve,180*(i+1))});
+ }
+ if(!tx)return;
+ for(const mint of extractBirthMints(tx,source))registerBirthMint(mint,source,signature);
+}
+
+function birthEligible(p){
+ const liq=n(p.liquidity&&p.liquidity.usd);
+ const mc=n(p.marketCap||p.fdv);
+ const v1=n(p.volume&&p.volume.h1);
+ const buys=n(p.txns&&p.txns.h1&&p.txns.h1.buys);
+ return liq>=1500&&mc>=3000&&mc<=10000000&&(v1>=250||buys>=2);
+}
+
+async function resolveBirthCandidates(){
+ const now=Date.now();
+ const pending=[...birthCandidates.values()].filter(function(x){
+  return !x.resolved&&now-x.firstSeen<60000;
+ });
+ if(!pending.length)return;
+ const addresses=pending.map(function(x){return x.mint});
+ const chunks=[];
+ for(let i=0;i<addresses.length;i+=BATCH)chunks.push(addresses.slice(i,i+BATCH));
+ try{
+  const responses=await Promise.all(chunks.map(function(chunk){
+   return getJSON(API+"/tokens/v1/solana/"+chunk.join(","));
+  }));
+  const livePairs=responses.flat().filter(function(p){
+   return String(p.chainId||"").toLowerCase()==="solana";
+  });
+  const old=previous();
+  const found=new Map();
+  for(const p of livePairs){
+   const addr=p.baseToken?.address;
+   const meta=addr?birthCandidates.get(addr):null;
+   if(!meta||(!birthEligible(p)&&!passes(p)))continue;
+   const enriched=enrich(p,old);
+   enriched._birth=meta;
+   found.set(addr,enriched);
+   meta.resolved=true;
+  }
+  if(found.size){
+   const byToken=new Map(allPairs.map(function(p){return [p.baseToken?.address,p]}));
+   for(const [addr,p] of found)byToken.set(addr,p);
+   allPairs=[...byToken.values()].sort(function(a,b){return b._m.score-a._m.score});
+   updateStats();
+   document.getElementById("refresh").textContent=new Date().toLocaleTimeString("it-IT");
+   setStatus("Live · Birth Radar · Solana WS");
+   render();
+  }
+  if([...birthCandidates.values()].some(function(x){
+   return !x.resolved&&Date.now()-x.firstSeen<60000;
+  }))scheduleBirthResolve();
+ }catch(e){scheduleBirthResolve()}
 }
 
 function connectRealtimeSocket(){
@@ -212,15 +371,26 @@ function connectRealtimeSocket(){
 
  ws.onopen=function(){
   if(generation!==wsGeneration)return;
-  setStatus("Live · Solana WS connesso");
-  pairs.forEach(function(p,i){
-   const id=i+1;
-   wsSubIds.set(p.pairAddress,id);
-   wsPairBySub.set(id,p.pairAddress);
+  setStatus("Live · Solana WS + Birth Radar");
+  let id=1;
+  Object.keys(BIRTH_PROGRAMS).forEach(function(source){
+   const subId=10000+id++;
+   wsBirthBySub.set(subId,source);
+   ws.send(JSON.stringify({
+    jsonrpc:"2.0",
+    id:subId,
+    method:"logsSubscribe",
+    params:[{mentions:[BIRTH_PROGRAMS[source]]},{commitment:"processed"}]
+   }));
+  });
+  pairs.forEach(function(p){
+   const subId=id++;
+   wsSubIds.set(p.pairAddress,subId);
+   wsPairBySub.set(subId,p.pairAddress);
    wsTokenByPair.set(p.pairAddress,p.baseToken?.address);
    ws.send(JSON.stringify({
     jsonrpc:"2.0",
-    id:id,
+    id:subId,
     method:"logsSubscribe",
     params:[{mentions:[p.pairAddress]},{commitment:"processed"}]
    }));
@@ -231,8 +401,16 @@ function connectRealtimeSocket(){
   if(generation!==wsGeneration)return;
   try{
    const msg=JSON.parse(event.data);
+   if(msg.error){setStatus("WS · errore sottoscrizione");return}
    if(msg.method!=="logsNotification")return;
-   const pair=wsPairBySub.get(msg.params?.subscription);
+   const subscription=msg.params?.subscription;
+   const source=wsBirthBySub.get(subscription);
+   if(source){
+    const value=msg.params?.result?.value||{};
+    if(!value.err)processBirthTransaction(source,value.signature,value.logs||[]);
+    return;
+   }
+   const pair=wsPairBySub.get(subscription);
    const token=pair?wsTokenByPair.get(pair):null;
    if(token)queueRealtimeRefresh(token);
   }catch(e){}
@@ -262,12 +440,20 @@ function startFallbackMonitor(){
 }
 
 async function dedupeAndRank(pairs,old){
- const filtered=pairs.filter(passes).map(function(p){return enrich(p,old)}).filter(classify);
+ const filtered=pairs.filter(function(p){
+  const birth=birthCandidates.get(p.baseToken?.address);
+  return passes(p)||(birth&&birthEligible(p));
+ }).map(function(p){
+  const x=enrich(p,old);
+  const birth=birthCandidates.get(p.baseToken?.address);
+  if(birth)x._birth=birth;
+  return x;
+ }).filter(classify);
  filtered.sort(function(a,b){return b._m.score-a._m.score});
  const byToken=new Map();
  for(const p of filtered){
   const k=p.baseToken?.address||p.pairAddress;
-  if(!byToken.has(k))byToken.set(k,p);
+  if(!byToken.has(k)||p._birth)byToken.set(k,p);
  }
  return [...byToken.values()];
 }
@@ -284,7 +470,7 @@ async function discoverScan(){
   document.getElementById("candidates").textContent=allPairs.length;
   document.getElementById("strong").textContent=allPairs.filter(function(p){return p._level==="STRONG"}).length;
   document.getElementById("refresh").textContent=new Date().toLocaleTimeString("it-IT");
-  document.getElementById("status").textContent="Live · discovery 30s · Solana WS · 120 token";
+  document.getElementById("status").textContent="Live · discovery 30s · Birth Radar · 80 token";
   render();
  }catch(e){
   document.getElementById("status").textContent="Errore DexScreener";
