@@ -149,7 +149,6 @@ function score(p,old){
 }
 function setLevelWithHysteresis(p){
  const m=p._m||{};
- if(!p._securityReady){p._level="";delete p._signal;return p;}
  const burstValue=n(m.burst),hasAccel=!!m.hasAccel,bpValue=n(m.bp);
  const p1=n(p.priceChange&&p.priceChange.h1),p24=n(p.priceChange&&p.priceChange.h24);
  let rawLevel="";
@@ -193,7 +192,7 @@ function marketEnrich(p,old){
  p._securityReady=false;
  p._level="";
  delete p._signal;
- return p;
+ return setLevelWithHysteresis(p);
 }
 
 function applySecurityScore(p,onchain){
