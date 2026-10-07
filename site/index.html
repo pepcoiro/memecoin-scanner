@@ -64,6 +64,10 @@ const knownLevels=new Map();
 const strongSignals=new Map();
 const STRONG_ENTER_SCORE=75;
 const STRONG_EXIT_SCORE=65;
+const SECURITY_CACHE_MS=45000;
+const SECURITY_MAX_TOKENS=8;
+const securityCache=new Map();
+let securityBusy=false;
 
 function n(x){const v=Number(x);return Number.isFinite(v)?v:0}
 function money(x){return new Intl.NumberFormat("it-IT",{notation:"compact",maximumFractionDigits:1}).format(n(x))}
@@ -98,6 +102,7 @@ function checkStrongNotifications(pairs){
   const address=p.baseToken?.address;
   if(!address)continue;
   present.add(address);
+  if(!p._securityReady)continue;
   const level=p._level||"";
   const previousLevel=knownLevels.get(address);
   if(level==="STRONG"&&previousLevel!=="STRONG")notifyStrong(p);
@@ -142,13 +147,16 @@ function score(p,old){
  if(old[p.pairAddress]&&n(old[p.pairAddress].v1)){has=true;acc=v1/n(old[p.pairAddress].v1);if(acc>=3)s+=7;else if(acc>=2)s+=5;else if(acc>=1.5)s+=3;else if(acc<.65)s-=2}
  return {score:Math.max(0,Math.min(100,Math.round(s))),burst:bu,accel:acc,hasAccel:has,bp:pressure};
 }
-function enrich(p,old){
- const m=score(p,old),p1=n(p.priceChange&&p.priceChange.h1),p24=n(p.priceChange&&p.priceChange.h24);
+function setLevelWithHysteresis(p){
+ const m=p._m||{};
+ if(!p._securityReady){p._level="";delete p._signal;return p;}
+ const burstValue=n(m.burst),hasAccel=!!m.hasAccel,bpValue=n(m.bp);
+ const p1=n(p.priceChange&&p.priceChange.h1),p24=n(p.priceChange&&p.priceChange.h24);
  let rawLevel="";
- if(m.score>=STRONG_ENTER_SCORE&&(m.burst>=2||m.hasAccel))rawLevel="STRONG";
- else if(m.score>=60&&(m.burst>=1.5||m.bp>=.55))rawLevel="INTERESTING";
- else if(m.score>=45&&(m.burst>=1.0||m.bp>=.48))rawLevel="WATCH";
- else if(m.score>=35&&(p24>60||p1>30||m.burst>=1.0||m.bp>=.48))rawLevel="WATCH";
+ if(m.score>=STRONG_ENTER_SCORE&&(burstValue>=2||hasAccel))rawLevel="STRONG";
+ else if(m.score>=60&&(burstValue>=1.5||bpValue>=.55))rawLevel="INTERESTING";
+ else if(m.score>=45&&(burstValue>=1.0||bpValue>=.48))rawLevel="WATCH";
+ else if(m.score>=35&&(p24>60||p1>30||burstValue>=1.0||bpValue>=.48))rawLevel="WATCH";
 
  const address=p.baseToken?.address;
  let level=rawLevel;
@@ -171,15 +179,42 @@ function enrich(p,old){
    level=rawLevel;
   }
  }
- p._m=m;
  p._rawLevel=rawLevel;
  p._level=level;
  const signal=address?strongSignals.get(address):null;
- if(signal&&signal.level==="STRONG")p._signal=signal;
+ if(signal&&signal.level==="STRONG")p._signal=signal;else delete p._signal;
  return p;
 }
+
+function marketEnrich(p,old){
+ const m=score(p,old);
+ m.marketScore=m.score;
+ p._m=m;
+ p._securityReady=false;
+ p._level="";
+ delete p._signal;
+ return p;
+}
+
+function applySecurityScore(p,onchain){
+ const marketScore=n(p._m&&p._m.marketScore);
+ const securityScore=n(onchain&&onchain.score);
+ let finalScore=Math.round(marketScore*.70+securityScore*.30);
+ const hardRisk=!!onchain&&(
+  onchain.mintAuthorityRisk||
+  onchain.freezeAuthorityRisk||
+  n(onchain.devShare)>20||
+  n(onchain.earlyShare)>60
+ );
+ if(hardRisk)finalScore=Math.min(finalScore,59);
+ p._m.score=Math.max(0,Math.min(100,finalScore));
+ p._onchain=onchain;
+ p._securityReady=true;
+ return setLevelWithHysteresis(p);
+}
+
 function passes(p){const liq=n(p.liquidity&&p.liquidity.usd),mc=n(p.marketCap||p.fdv),v24=n(p.volume&&p.volume.h24);return liq>=20000&&mc>=20000&&mc<=10000000&&v24>=20000}
-function classify(p){const p1=n(p.priceChange&&p.priceChange.h1),p24=n(p.priceChange&&p.priceChange.h24),addr=p.baseToken?.address;return !(p1<=-40||p24<=-70)&&(!!p._level||birthCandidates.has(addr))}
+function classify(p){const p1=n(p.priceChange&&p.priceChange.h1),p24=n(p.priceChange&&p.priceChange.h24),addr=p.baseToken?.address;return !(p1<=-40||p24<=-70)&&(!!p._level||!p._securityReady||birthCandidates.has(addr))}
 
 async function getJSON(url){const r=await fetch(url,{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);return r.json()}
 async function discover(){
@@ -247,7 +282,9 @@ async function refreshRealtimeAddresses(addresses){
    const addr=current.baseToken?.address;
    const live=addr?liveByToken.get(addr):null;
    if(live && passes(live)){
-    const enriched=enrich(live,old);
+    const enriched=marketEnrich(live,old);
+    const cached=securityCache.get(addr);
+    if(cached&&Date.now()-cached.ts<SECURITY_CACHE_MS)applySecurityScore(enriched,cached.data);
     if(classify(enriched)) merged.push(enriched);
    }
   }
@@ -258,6 +295,7 @@ async function refreshRealtimeAddresses(addresses){
   setStatus("Live · Solana WS");
   checkStrongNotifications(allPairs);
   render();
+  await refreshOnchainSecurity(allPairs);
  }catch(e){
   setStatus("WS attivo · refresh dati in errore");
  }
@@ -307,6 +345,168 @@ async function solanaRpc(method,params){
  const j=await r.json();
  if(j.error)throw new Error(j.error.message||"Solana RPC error");
  return j.result;
+}
+
+async function fetchOnchainSecurity(p){
+ const address=p.baseToken?.address;
+ if(!address)return null;
+ const cached=securityCache.get(address);
+ if(cached&&Date.now()-cached.ts<SECURITY_CACHE_MS)return cached.data;
+
+ try{
+  const mintInfo=await solanaRpc("getAccountInfo",[address,{encoding:"jsonParsed",commitment:"confirmed"}]);
+  const parsed=mintInfo&&mintInfo.value&&mintInfo.value.data&&mintInfo.value.data.parsed;
+  const info=parsed&&parsed.info;
+  if(!info)return null;
+
+  const supply=n(info.supply);
+  const mintAuthority=info.mintAuthority||null;
+  const freezeAuthority=info.freezeAuthority||null;
+
+  const largest=await solanaRpc("getTokenLargestAccounts",[address,{commitment:"confirmed"}]);
+  const largestAccounts=(largest&&largest.value)||[];
+  const accountAddresses=largestAccounts.slice(0,20).map(function(x){return x.address}).filter(Boolean);
+
+  let ownerRows=[];
+  if(accountAddresses.length){
+   const multiple=await solanaRpc("getMultipleAccounts",[accountAddresses,{encoding:"jsonParsed",commitment:"confirmed"}]);
+   const values=(multiple&&multiple.value)||[];
+   ownerRows=values.map(function(acc,i){
+    const ai=acc&&acc.data&&acc.data.parsed&&acc.data.parsed.info;
+    return {
+     address:accountAddresses[i],
+     owner:ai&&ai.owner,
+     amount:n(ai&&ai.tokenAmount&&ai.tokenAmount.amount)
+    };
+   }).filter(function(x){return !!x.owner&&x.amount>0});
+  }
+
+  const ownerMap=new Map();
+  for(const row of ownerRows)ownerMap.set(row.owner,n(ownerMap.get(row.owner))+row.amount);
+  const ownerBalances=[...ownerMap.values()].sort(function(a,b){return b-a});
+  const top10Raw=ownerBalances.slice(0,10).reduce(function(a,b){return a+b},0);
+  const top10Share=supply>0?top10Raw/supply*100:0;
+
+  const sigs=await solanaRpc("getSignaturesForAddress",[address,{limit:60,commitment:"confirmed"}]);
+  const signatures=(sigs||[]).slice().sort(function(a,b){
+   const at=a.blockTime==null?Infinity:a.blockTime;
+   const bt=b.blockTime==null?Infinity:b.blockTime;
+   return at-bt;
+  }).slice(0,10);
+
+  let creator=null;
+  const earlyOwners=new Set();
+  const earlySlots=new Map();
+  let firstObservedAt=null;
+
+  for(const s of signatures.slice(0,8)){
+   if(!s.signature)continue;
+   let tx=null;
+   try{
+    tx=await solanaRpc("getTransaction",[s.signature,{
+     encoding:"jsonParsed",
+     commitment:"confirmed",
+     maxSupportedTransactionVersion:0
+    }]);
+   }catch(e){}
+   if(!tx)continue;
+
+   if(!creator){
+    const keys=tx.transaction?.message?.accountKeys||[];
+    const signer=keys.find(function(k){return k&&k.signer});
+    creator=signer?(typeof signer==="string"?signer:signer.pubkey||null):null;
+   }
+
+   const preByIndex=new Map();
+   for(const b of (tx.meta?.preTokenBalances||[])){
+    if(b.mint===address)preByIndex.set(n(b.accountIndex),n(b.uiTokenAmount&&b.uiTokenAmount.amount));
+   }
+
+   let txBuyerCount=0;
+   for(const b of (tx.meta?.postTokenBalances||[])){
+    if(b.mint!==address||!b.owner)continue;
+    const post=n(b.uiTokenAmount&&b.uiTokenAmount.amount);
+    const pre=n(preByIndex.get(n(b.accountIndex)));
+    if(post>pre){
+     earlyOwners.add(b.owner);
+     txBuyerCount++;
+    }
+   }
+   if(txBuyerCount){
+    const slot=n(tx.slot);
+    earlySlots.set(slot,n(earlySlots.get(slot))+txBuyerCount);
+    if(!firstObservedAt)firstObservedAt=n(tx.blockTime)||null;
+   }
+  }
+
+  let devShare=0;
+  if(creator){
+   let devAmount=0;
+   for(const row of ownerRows)if(row.owner===creator)devAmount+=row.amount;
+   devShare=supply>0?devAmount/supply*100:0;
+  }
+
+  let earlyAmount=0;
+  for(const owner of earlyOwners)earlyAmount+=n(ownerMap.get(owner));
+  const earlyShare=supply>0?earlyAmount/supply*100:0;
+
+  const slotCounts=[...earlySlots.values()];
+  const maxSameSlot=slotCounts.length?Math.max(...slotCounts):0;
+  const totalEarlyBuys=slotCounts.reduce(function(a,b){return a+b},0);
+  const coordinationRatio=totalEarlyBuys?maxSameSlot/totalEarlyBuys:0;
+
+  const authorityScore=(mintAuthority&&freezeAuthority)?15:(mintAuthority||freezeAuthority)?55:100;
+  const concentrationScore=top10Share<=20?100:top10Share<=35?80:top10Share<=50?60:top10Share<=70?30:0;
+  const devScore=devShare<=0.5?100:devShare<=2?85:devShare<=5?65:devShare<=10?40:10;
+  const earlyScore=earlyShare<=10?100:earlyShare<=20?80:earlyShare<=35?60:earlyShare<=50?25:0;
+  const coordinationScore=coordinationRatio<=.30?100:coordinationRatio<=.50?70:coordinationRatio<=.70?30:0;
+
+  const data={
+   score:Math.max(0,Math.min(100,Math.round(
+    authorityScore*.08+
+    concentrationScore*.32+
+    devScore*.22+
+    earlyScore*.23+
+    coordinationScore*.15
+   ))),
+   top10Share:top10Share,
+   devShare:devShare,
+   earlyShare:earlyShare,
+   coordinationRatio:coordinationRatio,
+   mintAuthorityRisk:!!mintAuthority,
+   freezeAuthorityRisk:!!freezeAuthority,
+   creator:creator,
+   firstObservedAt:firstObservedAt
+  };
+
+  securityCache.set(address,{ts:Date.now(),data:data});
+  return data;
+ }catch(e){
+  return null;
+ }
+}
+
+async function refreshOnchainSecurity(pairs){
+ if(securityBusy)return;
+ const targets=pairs
+  .filter(function(p){return p.baseToken?.address&&n(p._m&&p._m.marketScore)>=50})
+  .sort(function(a,b){return n(b._m&&b._m.marketScore)-n(a._m&&a._m.marketScore)})
+  .slice(0,SECURITY_MAX_TOKENS);
+ if(!targets.length)return;
+
+ securityBusy=true;
+ try{
+  for(const p of targets){
+   const data=await fetchOnchainSecurity(p);
+   if(data)applySecurityScore(p,data);
+  }
+  rankRealtimePairs();
+  updateStats();
+  checkStrongNotifications(allPairs);
+  render();
+ }finally{
+  securityBusy=false;
+ }
 }
 
 function extractPubkey(x){
@@ -420,7 +620,7 @@ async function resolveBirthCandidates(){
    const addr=p.baseToken?.address;
    const meta=addr?birthCandidates.get(addr):null;
    if(!meta||(!birthEligible(p)&&!passes(p)))continue;
-   const enriched=enrich(p,old);
+   const enriched=marketEnrich(p,old);
    enriched._birth=meta;
    found.set(addr,enriched);
    meta.resolved=true;
@@ -434,6 +634,7 @@ async function resolveBirthCandidates(){
    setStatus("Live · Birth Radar · Solana WS");
    checkStrongNotifications(allPairs);
    render();
+   refreshOnchainSecurity(allPairs);
   }
   if([...birthCandidates.values()].some(function(x){
    return !x.resolved&&Date.now()-x.firstSeen<60000;
@@ -531,7 +732,7 @@ async function dedupeAndRank(pairs,old){
   const birth=birthCandidates.get(p.baseToken?.address);
   return passes(p)||(birth&&birthEligible(p));
  }).map(function(p){
-  const x=enrich(p,old);
+  const x=marketEnrich(p,old);
   const birth=birthCandidates.get(p.baseToken?.address);
   if(birth)x._birth=birth;
   return x;
@@ -560,6 +761,7 @@ async function discoverScan(){
   document.getElementById("status").textContent="Live · discovery 30s · Birth Radar · 80 token";
   checkStrongNotifications(allPairs);
   render();
+  await refreshOnchainSecurity(allPairs);
   connectRealtimeSocket();
  }catch(e){
   document.getElementById("status").textContent="Errore DexScreener";
