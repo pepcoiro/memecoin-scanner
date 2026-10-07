@@ -47,6 +47,7 @@ let currentQuery="";
 let ws=null;
 let wsSubIds=new Map();
 let wsPairBySub=new Map();
+let wsTokenByPair=new Map();
 let wsPending=new Set();
 let wsFlushTimer=null;
 let wsReconnectTimer=null;
@@ -188,6 +189,7 @@ function closeRealtimeSocket(){
  ws=null;
  wsSubIds=new Map();
  wsPairBySub=new Map();
+ wsTokenByPair=new Map();
 }
 
 function connectRealtimeSocket(){
@@ -213,6 +215,7 @@ function connectRealtimeSocket(){
    const id=i+1;
    wsSubIds.set(p.pairAddress,id);
    wsPairBySub.set(id,p.pairAddress);
+   wsTokenByPair.set(p.pairAddress,p.baseToken?.address);
    ws.send(JSON.stringify({
     jsonrpc:"2.0",
     id:id,
@@ -228,7 +231,8 @@ function connectRealtimeSocket(){
    const msg=JSON.parse(event.data);
    if(msg.method!=="logsNotification")return;
    const pair=wsPairBySub.get(msg.params?.subscription);
-   if(pair)queueRealtimeRefresh(pair);
+   const token=pair?wsTokenByPair.get(pair):null;
+   if(token)queueRealtimeRefresh(token);
   }catch(e){}
  };
 
