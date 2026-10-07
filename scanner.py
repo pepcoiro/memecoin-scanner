@@ -304,6 +304,45 @@ def jupiter_url(p):
         return ""
     return f"https://jup.ag/?buy={addr}&sell={JUPITER_SOL}"
 
+def write_site_data(rows,alerts):
+    site_dir=os.path.join(DIR,"site")
+    os.makedirs(site_dir,exist_ok=True)
+    alert_levels={p.get("pairAddress"):level for p,level in alerts}
+    tokens=[]
+    for p in rows:
+        m=p.get("_m") or {}
+        sec=p.get("_security") or {"status":"UNVERIFIED","bad":[],"reason":"not_checked"}
+        jup=p.get("_jupiter") or {"status":"NOT_CHECKED","reason":"not_checked","route":False}
+        usd,sol=max_position(p)
+        tokens.append({
+            "address":(p.get("baseToken") or {}).get("address",""),
+            "symbol":(p.get("baseToken") or {}).get("symbol","?"),
+            "name":(p.get("baseToken") or {}).get("name","?"),
+            "pair":p.get("pairAddress",""),
+            "dex":p.get("dexId","?"),
+            "url":p.get("url",""),
+            "score":p.get("_score",0),
+            "level":alert_levels.get(p.get("pairAddress"),""),
+            "burst":m.get("burst",0),
+            "accel":m.get("accel",0),
+            "has_accel":m.get("has_accel",False),
+            "buy_pressure":m.get("bp",0)*100,
+            "market_cap":n(p.get("marketCap") or p.get("fdv")),
+            "liquidity":n((p.get("liquidity") or {}).get("usd")),
+            "volume_1h":n((p.get("volume") or {}).get("h1")),
+            "volume_24h":n((p.get("volume") or {}).get("h24")),
+            "price_1h":n((p.get("priceChange") or {}).get("h1")),
+            "price_6h":n((p.get("priceChange") or {}).get("h6")),
+            "price_24h":n((p.get("priceChange") or {}).get("h24")),
+            "age_hours":round(age(p),2),
+            "security":sec,
+            "jupiter":jup,
+            "max_position_usd":usd,
+            "max_position_sol":sol,
+            "jupiter_url":jupiter_url(p),
+        })
+    payload={"generated_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"candidate_count":len(rows),"alert_count":len(alerts),"tokens":tokens}
+    save(os.path.join(site_dir,"data.json"),payload)
 def alert(p,level):
     t=p.get("baseToken") or {};m=p["_m"];pc=p.get("priceChange") or {};usd,sol=max_position(p)
     return "\n".join([
@@ -343,11 +382,13 @@ def main():
     secmap=security_batch(rows)
     for i,p in enumerate(rows,1):
         addr=(p.get("baseToken") or {}).get("address")
-        sec=secmap.get(addr,{"status":"UNVERIFIED","bad":[],"reason":"not_checked"});m=p["_m"];sym=(p.get("baseToken") or {}).get("symbol","?")
+        sec=secmap.get(addr,{"status":"UNVERIFIED","bad":[],"reason":"not_checked"});p["_security"]=sec;m=p["_m"];sym=(p.get("baseToken") or {}).get("symbol","?")
         p1=n((p.get("priceChange") or {}).get("h1"));p24=n((p.get("priceChange") or {}).get("h24"));b=m["bp"]*100
         sec_label=sec["status"] if sec["status"]=="PASS" else f"{sec['status']}:{sec.get('reason','unknown')}"
         print("#{:<2} {:<10} score={:>3} burst={:>4.1f}x buy={:>5.1f}% 1h={:+6.1f}% 24h={:+7.1f}% security={}".format(i,sym,p["_score"],m["burst"],b,p1,p24,sec_label))
-        if sec["status"]!="PASS" or p1>60 or p24>150 or p1<=-30 or p24<=-50:continue
+        if sec["status"]!="PASS" or p1>60 or p24>150 or p1<=-30 or p24<=-50:
+            p["_jupiter"]={"status":"NOT_CHECKED","reason":"filtered_before_jupiter","route":False}
+            continue
         jup=jupiter_quote(p);p["_jupiter"]=jup
         print(f"[JUPITER] {sym} => {jup['status']} ({jup.get('reason','')})")
         if not jup["route"]:continue
@@ -356,9 +397,10 @@ def main():
         else:continue
         alerts.append((p,level))
     alerts.sort(key=lambda x:(x[0]["_score"],x[0]["_m"]["burst"]),reverse=True)
-    if not alerts:print("\nNessun alert Telegram.");return
+    write_site_data(rows,alerts)
+    if not alerts:print("\nNessun alert. Dashboard aggiornata.");return
     for p,level in alerts:
-        text=alert(p,level);print("\n"+"-"*80);print(text);print("-"*80);send(text,p.get("pairAddress"),p)
+        print("\n"+"-"*80);print(alert(p,level));print("-"*80)
 
 if __name__=="__main__":
     try:main()
