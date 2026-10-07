@@ -159,30 +159,88 @@ def gtoken(force=False):
     except:return None
 
 def security(p):
-    addr=(p.get("baseToken") or {}).get("address");tok=gtoken()
-    if not tok or not addr:return {"status":"UNVERIFIED","bad":[]}
-    h={"Authorization":f"Bearer {tok}"};url="https://api.gopluslabs.io/api/v1/solana/token_security"
+    addr=(p.get("baseToken") or {}).get("address")
+    sym=(p.get("baseToken") or {}).get("symbol","?")
+    print(f"[GoPlus DEBUG] {sym} address={addr}")
+
+    tok=gtoken()
+    if not tok:
+        print(f"[GoPlus DEBUG] {sym} AUTH FAILED: no access token")
+        return {"status":"UNVERIFIED","bad":[]}
+
+    print(f"[GoPlus DEBUG] {sym} AUTH OK")
+    h={"Authorization":f"Bearer {tok}"}
+    url="https://api.gopluslabs.io/api/v1/solana/token_security"
+
     try:
-        r=S.get(url,params={"contract_addresses":addr},headers=h,timeout=TIMEOUT)
+        params={"contract_addresses":addr}
+        print(f"[GoPlus DEBUG] {sym} REQUEST: {url}")
+        print(f"[GoPlus DEBUG] {sym} PARAMS: {params}")
+
+        r=S.get(url,params=params,headers=h,timeout=TIMEOUT)
+        print(f"[GoPlus DEBUG] {sym} HTTP STATUS: {r.status_code}")
+        print(f"[GoPlus DEBUG] {sym} RESPONSE: {r.text[:3000]}")
+
         if r.status_code==401:
+            print(f"[GoPlus DEBUG] {sym} RETRYING AUTH")
             tok=gtoken(True)
-            if not tok:return {"status":"UNVERIFIED","bad":[]}
-            h["Authorization"]=f"Bearer {tok}";r=S.get(url,params={"contract_addresses":addr},headers=h,timeout=TIMEOUT)
-        if r.status_code!=200:return {"status":"UNVERIFIED","bad":[]}
-        z=r.json().get("result") or {};d=z.get(addr) if isinstance(z,dict) else None
+            if not tok:
+                print(f"[GoPlus DEBUG] {sym} RETRY AUTH FAILED")
+                return {"status":"UNVERIFIED","bad":[]}
+            h["Authorization"]=f"Bearer {tok}"
+            r=S.get(url,params=params,headers=h,timeout=TIMEOUT)
+            print(f"[GoPlus DEBUG] {sym} RETRY HTTP STATUS: {r.status_code}")
+            print(f"[GoPlus DEBUG] {sym} RETRY RESPONSE: {r.text[:3000]}")
+
+        if r.status_code!=200:
+            print(f"[GoPlus DEBUG] {sym} NON-200 -> UNVERIFIED")
+            return {"status":"UNVERIFIED","bad":[]}
+
+        try:
+            payload=r.json()
+        except Exception as e:
+            print(f"[GoPlus DEBUG] {sym} JSON PARSE ERROR: {e}")
+            return {"status":"UNVERIFIED","bad":[]}
+
+        z=payload.get("result") or {}
+        print(f"[GoPlus DEBUG] {sym} RESULT TYPE: {type(z).__name__}")
+        if isinstance(z,dict):
+            print(f"[GoPlus DEBUG] {sym} RESULT KEYS: {list(z.keys())[:30]}")
+
+        d=z.get(addr) if isinstance(z,dict) else None
         if not d and isinstance(z,dict):
             for k,v in z.items():
-                if str(k).lower()==addr.lower():d=v;break
-        if not d:return {"status":"UNVERIFIED","bad":[]}
+                if str(k).lower()==addr.lower():
+                    d=v
+                    break
+
+        if not d:
+            print(f"[GoPlus DEBUG] {sym} TOKEN DATA FOUND: NO")
+            return {"status":"UNVERIFIED","bad":[]}
+
+        print(f"[GoPlus DEBUG] {sym} TOKEN DATA FOUND: YES")
+        print(f"[GoPlus DEBUG] {sym} TOKEN DATA: {str(d)[:3000]}")
+
         bad=[]
         for k,label in (("is_honeypot","honeypot"),("cannot_sell","cannot_sell"),("blacklist","blacklist"),("is_mintable","mintable"),("transfer_pausable","transfer_pausable")):
-            if str(d.get(k,"0")).lower() in ("1","true"):bad.append(label)
+            if str(d.get(k,"0")).lower() in ("1","true"):
+                bad.append(label)
+
         for k,label in (("buy_tax","buy_tax"),("sell_tax","sell_tax")):
             try:
-                if float(d.get(k,0) or 0)>.10:bad.append(label)
-            except:pass
-        return {"status":"RISK" if bad else "PASS","bad":bad}
-    except:return {"status":"UNVERIFIED","bad":[]}
+                if float(d.get(k,0) or 0)>.10:
+                    bad.append(label)
+            except Exception as e:
+                print(f"[GoPlus DEBUG] {sym} TAX PARSE ERROR {k}: {e}")
+
+        status="RISK" if bad else "PASS"
+        print(f"[GoPlus DEBUG] {sym} FINAL STATUS: {status} bad={bad}")
+        return {"status":status,"bad":bad}
+
+    except Exception as e:
+        print(f"[GoPlus DEBUG] {sym} EXCEPTION: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        return {"status":"UNVERIFIED","bad":[]}
 
 def alert(p,level):
     t=p.get("baseToken") or {};m=p["_m"];pc=p.get("priceChange") or {};usd,sol=max_position(p)
