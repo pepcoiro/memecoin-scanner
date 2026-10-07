@@ -36,7 +36,7 @@ const PROFILE_LIMIT=150;
 const BATCH=25;
 const DISCOVERY_MS=30000;
 const WS_URL="wss://api.mainnet.solana.com/";
-const WS_MAX_PAIRS=40;
+const WS_MAX_PAIRS=120;
 const WS_REFRESH_DEBOUNCE_MS=700;
 const WS_RECONNECT_MS=5000;
 const FALLBACK_MONITOR_MS=10000;
@@ -87,7 +87,7 @@ function score(p,old){
  if(old[p.pairAddress]&&n(old[p.pairAddress].v1)){has=true;acc=v1/n(old[p.pairAddress].v1);if(acc>=3)s+=7;else if(acc>=2)s+=5;else if(acc>=1.5)s+=3;else if(acc<.65)s-=2}
  return {score:Math.max(0,Math.min(100,Math.round(s))),burst:bu,accel:acc,hasAccel:has,bp:pressure};
 }
-function enrich(p,old){const m=score(p,old);let level="";if(m.score>=75&&(m.burst>=2||m.hasAccel))level="STRONG";else if(m.score>=60&&(m.burst>=1.5||m.bp>=.55))level="INTERESTING";else if(m.score>=50&&(m.burst>=1.1||m.bp>=.50))level="WATCH";p._m=m;p._level=level;return p}
+function enrich(p,old){const m=score(p,old);let level="";if(m.score>=75&&(m.burst>=2||m.hasAccel))level="STRONG";else if(m.score>=60&&(m.burst>=1.5||m.bp>=.55))level="INTERESTING";else if(m.score>=45&&(m.burst>=1.0||m.bp>=.48))level="WATCH";p._m=m;p._level=level;return p}
 function passes(p){const liq=n(p.liquidity&&p.liquidity.usd),mc=n(p.marketCap||p.fdv),v24=n(p.volume&&p.volume.h24);return liq>=20000&&mc>=20000&&mc<=10000000&&v24>=20000}
 function classify(p){const p1=n(p.priceChange&&p.priceChange.h1),p24=n(p.priceChange&&p.priceChange.h24);return !(p1>60||p24>150||p1<=-30||p24<=-50)&&!!p._level}
 
@@ -282,7 +282,7 @@ async function discoverScan(){
   document.getElementById("candidates").textContent=allPairs.length;
   document.getElementById("strong").textContent=allPairs.filter(function(p){return p._level==="STRONG"}).length;
   document.getElementById("refresh").textContent=new Date().toLocaleTimeString("it-IT");
-  document.getElementById("status").textContent="Live · discovery 30s · monitor 3s";
+  document.getElementById("status").textContent="Live · discovery 30s · Solana WS · 120 token";
   render();
  }catch(e){
   document.getElementById("status").textContent="Errore DexScreener";
