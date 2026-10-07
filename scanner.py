@@ -161,13 +161,13 @@ def gtoken(force=False):
 def security(p):
     addr=(p.get("baseToken") or {}).get("address");tok=gtoken()
     if not tok or not addr:return {"status":"UNVERIFIED","bad":[]}
-    h={"Authorization":tok};url="https://api.gopluslabs.io/api/v1/solana/token_security"
+    h={"Authorization":f"Bearer {tok}"};url="https://api.gopluslabs.io/api/v1/solana/token_security"
     try:
         r=S.get(url,params={"contract_addresses":addr},headers=h,timeout=TIMEOUT)
         if r.status_code==401:
             tok=gtoken(True)
             if not tok:return {"status":"UNVERIFIED","bad":[]}
-            h["Authorization"]=tok;r=S.get(url,params={"contract_addresses":addr},headers=h,timeout=TIMEOUT)
+            h["Authorization"]=f"Bearer {tok}";r=S.get(url,params={"contract_addresses":addr},headers=h,timeout=TIMEOUT)
         if r.status_code!=200:return {"status":"UNVERIFIED","bad":[]}
         z=r.json().get("result") or {};d=z.get(addr) if isinstance(z,dict) else None
         if not d and isinstance(z,dict):
