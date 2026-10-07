@@ -5,8 +5,7 @@ DIR=os.path.dirname(os.path.abspath(__file__))
 STATE=os.path.join(DIR,"scanner_state.json"); TGSTATE=os.path.join(DIR,"telegram_alert_state.json")
 CHAIN="solana"; MIN_LIQ=20000; MIN_MC=20000; MAX_MC=10000000; MIN_VOL24=20000; TOP_N=15
 BOT=os.getenv("TELEGRAM_BOT_TOKEN","").strip(); CHAT=os.getenv("TELEGRAM_CHAT_ID","").strip()
-GKEY=os.getenv("GOPLUS_APP_KEY","").strip(); GSECRET=os.getenv("GOPLUS_APP_SECRET","").strip()
-GTOKEN=None; GEXP=0
+SOLANA_RPC=os.getenv("SOLANA_RPC_URL","").strip() or "https://api.mainnet-beta.solana.com"
 S=requests.Session(); S.headers.update({"User-Agent":"MemecoinScanner/4.0"})
 
 def n(x):
