@@ -24,7 +24,7 @@
 <div class="wrap">
 <div class="top"><div class="brand"><h1>MEMECOIN SCANNER <span style="color:#8b5cf6">/ SOLANA</span></h1><p>DexScreener live filter · momentum · liquidity · buy pressure</p></div><div class="status"><i class="dot"></i><span id="status">Connessione a DexScreener…</span></div></div>
 <div class="stats"><div class="stat"><span>Coppie analizzate</span><strong id="pairs">—</strong></div><div class="stat"><span>Candidati</span><strong id="candidates">—</strong></div><div class="stat"><span>Strong</span><strong id="strong">—</strong></div><div class="stat"><span>Ultimo refresh</span><strong id="refresh">—</strong></div></div>
-<div class="toolbar"><div class="filters"><button class="filter active" data-filter="all">Tutti</button><button class="filter" data-filter="strong">🔥 Strong</button><button class="filter" data-filter="interesting">🟢 Interesting</button><button class="filter" data-filter="fresh">🆕 &lt;24h</button></div><input id="search" class="search" placeholder="Cerca simbolo, nome o contract…"></div>
+<div class="toolbar"><div class="filters"><button class="filter active" data-filter="all">Tutti</button><button class="filter" data-filter="strong">🔥 Strong</button><button class="filter" data-filter="interesting">🟢 Interesting</button><button class="filter" data-filter="watch">🟡 Watch</button><button class="filter" data-filter="fresh">🆕 &lt;24h</button></div><input id="search" class="search" placeholder="Cerca simbolo, nome o contract…"></div>
 <div id="grid" class="grid"><div class="empty">Scansione DexScreener in corso…</div></div>
 <div class="footer">Dati direttamente da DexScreener. Il pulsante Terminal apre direttamente la pagina del token.</div>
 </div>
@@ -73,7 +73,7 @@ function score(p,old){
  if(old[p.pairAddress]&&n(old[p.pairAddress].v1)){has=true;acc=v1/n(old[p.pairAddress].v1);if(acc>=3)s+=7;else if(acc>=2)s+=5;else if(acc>=1.5)s+=3;else if(acc<.65)s-=2}
  return {score:Math.max(0,Math.min(100,Math.round(s))),burst:bu,accel:acc,hasAccel:has,bp:pressure};
 }
-function enrich(p,old){const m=score(p,old);let level="";if(m.score>=75&&(m.burst>=2||m.hasAccel))level="STRONG";else if(m.score>=60&&(m.burst>=1.5||m.bp>=.55))level="INTERESTING";p._m=m;p._level=level;return p}
+function enrich(p,old){const m=score(p,old);let level="";if(m.score>=75&&(m.burst>=2||m.hasAccel))level="STRONG";else if(m.score>=60&&(m.burst>=1.5||m.bp>=.55))level="INTERESTING";else if(m.score>=50&&(m.burst>=1.1||m.bp>=.50))level="WATCH";p._m=m;p._level=level;return p}
 function passes(p){const liq=n(p.liquidity&&p.liquidity.usd),mc=n(p.marketCap||p.fdv),v24=n(p.volume&&p.volume.h24);return liq>=20000&&mc>=20000&&mc<=10000000&&v24>=20000}
 function classify(p){const p1=n(p.priceChange&&p.priceChange.h1),p24=n(p.priceChange&&p.priceChange.h24);return !(p1>60||p24>150||p1<=-30||p24<=-50)&&!!p._level}
 
@@ -93,7 +93,7 @@ function render(){
  let list=allPairs.filter(function(p){
   const q=currentQuery.toLowerCase(),text=(p.baseToken?.symbol||"")+" "+(p.baseToken?.name||"")+" "+(p.baseToken?.address||"");
   const hit=!q||text.toLowerCase().includes(q);
-  const f=currentFilter==="all"||(currentFilter==="strong"&&p._level==="STRONG")||(currentFilter==="interesting"&&p._level==="INTERESTING")||(currentFilter==="fresh"&&age(p)<=24);
+  const f=currentFilter==="all"||(currentFilter==="strong"&&p._level==="STRONG")||(currentFilter==="interesting"&&p._level==="INTERESTING")||(currentFilter==="watch"&&p._level==="WATCH")||(currentFilter==="fresh"&&age(p)<=24);
   return hit&&f;
  }).sort(function(a,b){return b._m.score-a._m.score});
  if(!list.length){document.getElementById("grid").innerHTML='<div class="empty">Nessun token corrisponde ai filtri.</div>';return}
@@ -101,7 +101,7 @@ function render(){
   const t=p.baseToken||{},m=p._m||{},a=age(p),hot=p._level==="STRONG";
   const initials=(t.symbol||"?").slice(0,2).toUpperCase();
   return '<article class="card'+(hot?" hot":"")+'"><div class="head"><div class="token"><div class="avatar">'+esc(initials)+'</div><div><div class="sym">'+esc(t.symbol||"?")+'</div><div class="name" title="'+esc(t.name||"")+'">'+esc(t.name||"")+'</div></div></div><div class="score"><b>'+m.score+'</b><small>score</small></div></div>'+
-  '<div class="badges">'+(p._level?'<span class="badge '+(hot?"red":"green")+'">'+(hot?"🔥 STRONG":"🟢 INTERESTING")+'</span>':'')+(a<=24?'<span class="badge yellow">🆕 '+a.toFixed(1)+'h</span>':'')+'<span class="badge">'+esc(p.dexId||"?")+'</span></div>'+
+  '<div class="badges">'+(p._level?'<span class="badge '+(hot?"red":(p._level==="WATCH"?"yellow":"green"))+'">'+(hot?"🔥 STRONG":(p._level==="WATCH"?"🟡 WATCH":"🟢 INTERESTING"))+'</span>':'')+(a<=24?'<span class="badge yellow">🆕 '+a.toFixed(1)+'h</span>':'')+'<span class="badge">'+esc(p.dexId||"?")+'</span></div>'+
   '<div class="metrics"><div class="metric"><span>Liquidity</span><strong>$'+money(p.liquidity&&p.liquidity.usd)+'</strong></div><div class="metric"><span>Market Cap</span><strong>$'+money(p.marketCap||p.fdv)+'</strong></div><div class="metric"><span>Vol 1h</span><strong>$'+money(p.volume&&p.volume.h1)+'</strong></div></div>'+
   '<div class="rows"><div class="row"><span>Volume burst</span><b>'+m.burst.toFixed(2)+'x</b></div><div class="row"><span>Buy pressure</span><b>'+(m.bp*100).toFixed(1)+'%</b></div><div class="row"><span>Accelerazione</span><b>'+(m.hasAccel?m.accel.toFixed(2)+"x":"N/D")+'</b></div><div class="row"><span>Price 1h / 24h</span><b>'+pct(p.priceChange&&p.priceChange.h1)+' / '+pct(p.priceChange&&p.priceChange.h24)+'</b></div></div>'+
   '<div class="actions"><a class="buy" href="'+terminal(t.address||"")+'" target="_blank" rel="noopener">🟣 APRI TERMINAL</a><a class="dex" href="'+esc(p.url||"#")+'" target="_blank" rel="noopener">DEX</a></div></article>';
