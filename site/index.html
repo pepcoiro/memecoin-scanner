@@ -217,7 +217,8 @@ async function discoverMarkets(){
   if(!r.ok)throw new Error("Biquote latest HTTP "+r.status);
   return r.json();
  });
- return (ticks.items||ticks.data||ticks||[]).map(function(t){
+ const tickRows=Array.isArray(ticks)?ticks:Object.values(ticks||{});
+ return tickRows.map(function(t){
   return {
    symbol:t.symbol||"?",
    name:t.description||t.symbol||"?",
