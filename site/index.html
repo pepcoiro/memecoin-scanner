@@ -26,7 +26,7 @@
 <div class="stats"><div class="stat"><span>Coppie analizzate</span><strong id="pairs">—</strong></div><div class="stat"><span>Candidati</span><strong id="candidates">—</strong></div><div class="stat"><span>Strong</span><strong id="strong">—</strong></div><div class="stat"><span>Ultimo refresh</span><strong id="refresh">—</strong></div></div>
 <div class="toolbar"><div class="filters"><button class="filter active" data-filter="all">Tutti</button><button class="filter" data-filter="strong">🔥 Strong</button><button class="filter" data-filter="interesting">🟢 Interesting</button><button class="filter" data-filter="fresh">🆕 &lt;24h</button></div><input id="search" class="search" placeholder="Cerca simbolo, nome o contract…"></div>
 <div id="grid" class="grid"><div class="empty">Scansione DexScreener in corso…</div></div>
-<div class="footer">Dati direttamente da DexScreener. Il pulsante Axiom apre direttamente la pagina del token.</div>
+<div class="footer">Dati direttamente da DexScreener. Il pulsante Terminal apre direttamente la pagina del token.</div>
 </div>
 
 
@@ -49,7 +49,7 @@ function bp(p){const t=p.txns&&p.txns.h1?p.txns.h1:{},b=n(t.buys),s=n(t.sells);r
 function burst(p){const v1=n(p.volume&&p.volume.h1),v24=n(p.volume&&p.volume.h24);return v24?v1*24/v24:0}
 function previous(){try{return JSON.parse(localStorage.getItem(STATE_KEY)||"{}")}catch(e){return {}}}
 function savePrevious(v){try{localStorage.setItem(STATE_KEY,JSON.stringify(v))}catch(e){}}
-function axiom(addr){return "https://axiom.trade/t/"+encodeURIComponent(addr)}
+function terminal(addr){return "https://trade.padre.gg/trade/solana/"+encodeURIComponent(addr)}
 
 function score(p,old){
  const liq=n(p.liquidity&&p.liquidity.usd),mc=n(p.marketCap||p.fdv),v1=n(p.volume&&p.volume.h1),v24=n(p.volume&&p.volume.h24);
@@ -104,7 +104,7 @@ function render(){
   '<div class="badges">'+(p._level?'<span class="badge '+(hot?"red":"green")+'">'+(hot?"🔥 STRONG":"🟢 INTERESTING")+'</span>':'')+(a<=24?'<span class="badge yellow">🆕 '+a.toFixed(1)+'h</span>':'')+'<span class="badge">'+esc(p.dexId||"?")+'</span></div>'+
   '<div class="metrics"><div class="metric"><span>Liquidity</span><strong>$'+money(p.liquidity&&p.liquidity.usd)+'</strong></div><div class="metric"><span>Market Cap</span><strong>$'+money(p.marketCap||p.fdv)+'</strong></div><div class="metric"><span>Vol 1h</span><strong>$'+money(p.volume&&p.volume.h1)+'</strong></div></div>'+
   '<div class="rows"><div class="row"><span>Volume burst</span><b>'+m.burst.toFixed(2)+'x</b></div><div class="row"><span>Buy pressure</span><b>'+(m.bp*100).toFixed(1)+'%</b></div><div class="row"><span>Accelerazione</span><b>'+(m.hasAccel?m.accel.toFixed(2)+"x":"N/D")+'</b></div><div class="row"><span>Price 1h / 24h</span><b>'+pct(p.priceChange&&p.priceChange.h1)+' / '+pct(p.priceChange&&p.priceChange.h24)+'</b></div></div>'+
-  '<div class="actions"><a class="buy" href="'+axiom(t.address||"")+'" target="_blank" rel="noopener">🟣 APRI AXIOM</a><a class="dex" href="'+esc(p.url||"#")+'" target="_blank" rel="noopener">DEX</a></div></article>';
+  '<div class="actions"><a class="buy" href="'+terminal(t.address||"")+'" target="_blank" rel="noopener">🟣 APRI TERMINAL</a><a class="dex" href="'+esc(p.url||"#")+'" target="_blank" rel="noopener">DEX</a></div></article>';
  }).join("");
 }
 
