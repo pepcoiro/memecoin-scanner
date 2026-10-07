@@ -1,9 +1,12 @@
-import os,json,time,math,hashlib,traceback,requests
+import os,csv,json,time,math,hashlib,traceback,requests
 
 BASE="https://api.dexscreener.com"; TIMEOUT=20
 DIR=os.path.dirname(os.path.abspath(__file__))
 STATE=os.path.join(DIR,"scanner_state.json"); TGSTATE=os.path.join(DIR,"telegram_alert_state.json")
 CHAIN="solana"; MIN_LIQ=20000; MIN_MC=20000; MAX_MC=10000000; MIN_VOL24=20000; TOP_N=15
+ACC_GAP=1800  # secondi: oltre questo gap tra due run l'accelerazione non viene calcolata
+LOG=os.path.join(DIR,"alerts_log.csv"); COLS=["ts","pair","symbol","level","score","burst","accel","bp","price","r1h","r6h","r24h"]
+SYS="11111111111111111111111111111111"; BURN="1nc1nerator11111111111111111111111111111111"
 BOT=os.getenv("TELEGRAM_BOT_TOKEN","").strip(); CHAT=os.getenv("TELEGRAM_CHAT_ID","").strip()
 HELIUS_API_KEY=os.getenv("HELIUS_API_KEY","").strip()
 SOLANA_RPC=f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else ""
@@ -14,7 +17,7 @@ def n(x):
     except:return 0.0
 
 def get(url,**kw):
-    last=None
+    last=RuntimeError("429 persistente")
     for i in range(3):
         try:
             r=S.get(url,timeout=TIMEOUT,**kw)
@@ -126,41 +129,70 @@ def discover():
     tokens={}
     for ep in ("/token-profiles/latest/v1","/token-boosts/latest/v1"):
         try:data=get(BASE+ep)
-        except Exception as e:print("[DISCOVERY]",e);continue
+        except Exception as e:print("[DISCOVERY]",type(e).__name__);continue
         for x in data if isinstance(data,list) else []:
             if str(x.get("chainId","")).lower()==CHAIN and x.get("tokenAddress"):tokens[x["tokenAddress"]]=1
-    pairs=[]
-    for token in list(tokens)[:150]:
+    addrs=list(tokens)[:150];pairs=[]
+    for i in range(0,len(addrs),30):
         try:
-            d=get(f"{BASE}/token-pairs/v1/{CHAIN}/{token}")
+            d=get(f"{BASE}/tokens/v1/{CHAIN}/{','.join(addrs[i:i+30])}")
             if isinstance(d,list):pairs+=d
-        except:pass
-    old=load(STATE,{});new={};rows=[];seen=set()
+        except Exception as e:print("[PAIRS]",type(e).__name__)
+    old=load(STATE,{});new={};best={};wanted=set(addrs)
     for p in pairs:
         if str(p.get("chainId","")).lower()!=CHAIN:continue
-        pair=p.get("pairAddress")
-        if not pair or pair in seen:continue
-        seen.add(pair);liq=n((p.get("liquidity") or {}).get("usd"));mc=n(p.get("marketCap") or p.get("fdv"));v24=n((p.get("volume") or {}).get("h24"))
+        base=(p.get("baseToken") or {}).get("address");pair=p.get("pairAddress")
+        if not pair or base not in wanted:continue  # scarta pair dove il token e' il quote
+        liq=n((p.get("liquidity") or {}).get("usd"));mc=n(p.get("marketCap") or p.get("fdv"));v24=n((p.get("volume") or {}).get("h24"))
         if liq<MIN_LIQ or mc<MIN_MC or mc>MAX_MC or v24<MIN_VOL24:continue
-        p["_m"]=score(p,old.get(pair));p["_score"]=p["_m"]["score"];rows.append(p);new[pair]={"ts":time.time(),"v1":n((p.get("volume") or {}).get("h1"))}
-    save(STATE,new);rows.sort(key=lambda p:(p["_score"],p["_m"]["accel"],p["_m"]["burst"]),reverse=True)
+        if base not in best or liq>n((best[base].get("liquidity") or {}).get("usd")):best[base]=p  # un solo pair per token
+    rows=[]
+    for p in best.values():
+        pair=p["pairAddress"];o=old.get(pair)
+        if o and time.time()-n(o.get("ts"))>ACC_GAP:o=None
+        p["_m"]=score(p,o);p["_score"]=p["_m"]["score"];rows.append(p)
+        new[pair]={"ts":time.time(),"v1":n((p.get("volume") or {}).get("h1"))}
+    if pairs:save(STATE,new)  # non azzerare lo stato se DexScreener non ha risposto
+    rows.sort(key=lambda p:(p["_score"],p["_m"]["accel"],p["_m"]["burst"]),reverse=True)
     return rows[:TOP_N]
 
 
 def rpc_batch(calls):
     if not SOLANA_RPC:
         raise RuntimeError("HELIUS_API_KEY non configurata: impossibile usare Solana RPC")
-    try:
-        print("[ONCHAIN] RPC: Helius")
-        r=S.post(SOLANA_RPC,json=[
-            {"jsonrpc":"2.0","id":i+1,"method":m,"params":p}
-            for i,(m,p) in enumerate(calls)
-        ],headers={"Content-Type":"application/json"},timeout=TIMEOUT)
-        r.raise_for_status()
-        return {x.get("id"):x for x in r.json() if isinstance(x,dict)}
-    except Exception as e:
-        print(f"[ONCHAIN] RPC ERROR: {type(e).__name__}: {e}")
-        return {}
+    print("[ONCHAIN] RPC: Helius")
+    body=[{"jsonrpc":"2.0","id":i+1,"method":m,"params":p} for i,(m,p) in enumerate(calls)]
+    for i in range(3):
+        try:
+            r=S.post(SOLANA_RPC,json=body,headers={"Content-Type":"application/json"},timeout=TIMEOUT)
+            r.raise_for_status()
+            return {x.get("id"):x for x in r.json() if isinstance(x,dict)}
+        except Exception as e:
+            print(f"[ONCHAIN] RPC ERROR: {type(e).__name__}")  # niente str(e): contiene l'URL con la api-key
+            if i<2:time.sleep(1+i)
+    return {}
+
+def _ow(acc):
+    d=(acc or {}).get("data")
+    return ((d.get("parsed") or {}).get("info") or {}).get("owner") if isinstance(d,dict) else None
+
+def real_holders(lg):
+    # token account -> owner -> tieni solo wallet veri (owner dell'owner = System Program), esclusi pool/curve (PDA) e burn
+    ks=[a for a in lg if lg[a]]
+    if not ks:return {}
+    d=rpc_batch([("getMultipleAccounts",[[x["address"] for x in lg[a]],{"encoding":"jsonParsed","commitment":"confirmed"}]) for a in ks])
+    own={}
+    for i,a in enumerate(ks):
+        v=((d.get(i+1) or {}).get("result") or {}).get("value")
+        if isinstance(v,list) and len(v)==len(lg[a]):own[a]=[_ow(x) or SYS for x in v]
+    if not own:return {}
+    d=rpc_batch([("getMultipleAccounts",[own[a],{"encoding":"base64","dataSlice":{"offset":0,"length":0},"commitment":"confirmed"}]) for a in own])
+    res={}
+    for i,a in enumerate(own):
+        v=((d.get(i+1) or {}).get("result") or {}).get("value")
+        if isinstance(v,list) and len(v)==len(own[a]):
+            res[a]=[n(x["amount"]) for x,o,acc in zip(lg[a],own[a],v) if acc and acc.get("owner")==SYS and o!=BURN]
+    return res
 
 def security_batch(rows):
     addrs=[]
@@ -172,10 +204,12 @@ def security_batch(rows):
 
     calls=[]
     for a in addrs:
-        calls.append(("getAccountInfo",[a,{"encoding":"jsonParsed","commitment":"finalized"}]))
+        calls.append(("getAccountInfo",[a,{"encoding":"jsonParsed","commitment":"confirmed"}]))
     for a in addrs:
-        calls.append(("getTokenLargestAccounts",[a,{"commitment":"finalized"}]))
+        calls.append(("getTokenLargestAccounts",[a,{"commitment":"confirmed"}]))
     data=rpc_batch(calls)
+    lg={a:(data.get(len(addrs)+i+1) or {}).get("result",{}).get("value") or [] for i,a in enumerate(addrs)}
+    rh=real_holders(lg)
 
     for i,addr in enumerate(addrs):
         mint=(data.get(i+1) or {}).get("result",{}).get("value")
@@ -202,9 +236,9 @@ def security_batch(rows):
                         if bps>1000:bad.append("transfer_fee")
 
             supply=n(info.get("supply"))
-            if supply and largest:
-                top10=sum(sorted([n(x.get("amount")) for x in largest],reverse=True)[:10])
-                if top10/supply>0.60:bad.append("holder_concentration")
+            if not supply or not largest or addr not in rh:continue  # dati holder mancanti: resta UNVERIFIED
+            top10=sum(sorted(rh[addr],reverse=True)[:10])
+            if top10/supply>0.60:bad.append("holder_concentration")
 
             out[addr]={"status":"RISK" if bad else "PASS","bad":bad}
             print(f"[ONCHAIN] {addr} => {out[addr]['status']} {bad}")
@@ -224,8 +258,8 @@ def alert(p,level):
         f"🔥 VOLUME 1H: {n((p.get('volume') or {}).get('h1')):,.0f}",
         f"📊 VOLUME 24H: {n((p.get('volume') or {}).get('h24')):,.0f}",
         f"📈 PRICE: 1h {n(pc.get('h1')):+.1f}% | 6h {n(pc.get('h6')):+.1f}% | 24h {n(pc.get('h24')):+.1f}%",
-        "","🎯 MAX PUNTATA TEORICA: {}".format(sol if sol>=1 else sol),
-        "   USD stimati: {:.0f} | price impact teorico <=2%".format(usd),"","🛡️ SECURITY: PASS",f"🔗 {p.get('url','')}"])
+        "",f"🎯 MAX PUNTATA TEORICA: {sol:.2f} SOL",
+        f"   USD stimati: {usd:.0f} | price impact teorico <=2%","","🛡️ SECURITY: PASS",f"🔗 {p.get('url','')}"])
 
 def send(text,pair):
     if not BOT or not CHAT:return False
@@ -233,13 +267,47 @@ def send(text,pair):
     if n(st.get(pair)) and time.time()-n(st[pair])<3600:return False
     try:
         r=S.post(f"https://api.telegram.org/bot{BOT}/sendMessage",json={"chat_id":CHAT,"text":text,"disable_web_page_preview":False},timeout=TIMEOUT)
-        if r.status_code!=200:return False
+        if r.status_code!=200:print("[Telegram]",r.status_code,r.text[:200]);return False
         if not r.json().get("ok"):return False
         st[pair]=time.time();save(TGSTATE,st);print("[Telegram] Alert inviato.");return True
-    except Exception as e:print("[Telegram]",e);return False
+    except Exception as e:print("[Telegram]",type(e).__name__);return False
+
+def log_alert(p,level):
+    m=p["_m"];new=not os.path.exists(LOG)
+    try:
+        with open(LOG,"a",newline="",encoding="utf-8") as f:
+            w=csv.writer(f)
+            if new:w.writerow(COLS)
+            w.writerow([int(time.time()),p.get("pairAddress"),(p.get("baseToken") or {}).get("symbol","?"),level,p["_score"],round(m["burst"],2),round(m["accel"],2),round(m["bp"],3),n(p.get("priceUsd")),"","",""])
+    except Exception as e:print("[LOG]",type(e).__name__)
+
+def update_log():
+    # compila r1h/r6h/r24h (% vs prezzo dell'alert); "NA" se la finestra e' scaduta o il prezzo non c'e'
+    try:
+        with open(LOG,newline="",encoding="utf-8") as f:rows=list(csv.DictReader(f))
+        now=time.time();todo=[]
+        for r in rows:
+            el=(now-n(r["ts"]))/3600
+            for k,h in (("r1h",1),("r6h",6),("r24h",24)):
+                if not r[k] and el>=h:todo.append((r,k,h,el))
+        if not todo:return
+        pairs=sorted({r["pair"] for r,_,_,_ in todo});px={}
+        for i in range(0,len(pairs),30):
+            d=get(f"{BASE}/latest/dex/pairs/{CHAIN}/{','.join(pairs[i:i+30])}")
+            for x in d.get("pairs") or []:px[x.get("pairAddress")]=n(x.get("priceUsd"))
+        for r,k,h,el in todo:
+            p0=n(r["price"]);p=px.get(r["pair"])
+            r[k]="NA" if el>h*1.5 or not p0 or not p else round((p/p0-1)*100,1)
+        tmp=LOG+".tmp"
+        with open(tmp,"w",newline="",encoding="utf-8") as f:
+            w=csv.DictWriter(f,fieldnames=COLS);w.writeheader();w.writerows(rows)
+        os.replace(tmp,LOG)
+    except FileNotFoundError:pass
+    except Exception as e:print("[LOG]",type(e).__name__)
 
 def main():
     print("="*80);print(" MEMECOIN SCANNER — SOLANA");print(" MARKET DATA + SECURITY + MAX POSITION");print("="*80)
+    update_log()
     rows=discover()
     if not rows:print("Nessun candidato.");return
     alerts=[]
@@ -257,7 +325,8 @@ def main():
     alerts.sort(key=lambda x:(x[0]["_score"],x[0]["_m"]["burst"]),reverse=True)
     if not alerts:print("\nNessun alert Telegram.");return
     for p,level in alerts:
-        text=alert(p,level);print("\n"+"-"*80);print(text);print("-"*80);send(text,p.get("pairAddress"))
+        text=alert(p,level);print("\n"+"-"*80);print(text);print("-"*80)
+        if send(text,p.get("pairAddress")):log_alert(p,level)
 
 if __name__=="__main__":
     try:main()
