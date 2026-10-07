@@ -9,7 +9,7 @@
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 50% -10%,#201743 0,#07090e 48%);color:var(--text);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}.wrap{max-width:1500px;margin:auto;padding:28px 22px 50px}
 .top{display:flex;justify-content:space-between;gap:20px;align-items:end;margin-bottom:22px}.brand h1{margin:0;font-size:31px;letter-spacing:-.04em}.brand p{margin:7px 0 0;color:var(--muted)}.status{display:flex;gap:9px;align-items:center;color:var(--muted);font-size:13px}.dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 14px rgba(34,197,94,.65)}
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}.stat{background:rgba(16,20,28,.88);border:1px solid var(--line);border-radius:16px;padding:15px}.stat span{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.1em}.stat strong{display:block;margin-top:6px;font-size:24px}
-.market-tabs{display:flex;gap:8px;margin-bottom:14px}.market-tab{border:1px solid var(--line);background:var(--panel);color:var(--muted);padding:9px 14px;border-radius:999px;cursor:pointer;font-weight:800}.market-tab.active{color:#fff;background:#241c3d;border-color:#6b4ec2}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px}.filters{display:flex;gap:8px;flex-wrap:wrap}.filter{border:1px solid var(--line);background:var(--panel);color:var(--muted);padding:8px 12px;border-radius:999px;cursor:pointer}.filter.active{color:#fff;background:#241c3d;border-color:#6b4ec2}.search{background:var(--panel);border:1px solid var(--line);color:#fff;padding:10px 13px;border-radius:11px;min-width:270px;outline:none}
+.market-tabs{display:flex;gap:8px;margin-bottom:14px}.settings-panel{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}.setting{background:rgba(16,20,28,.75);border:1px solid var(--line);border-radius:12px;padding:10px}.setting label{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}.setting input{width:100%;background:#0c1017;border:1px solid #2b3441;color:#fff;border-radius:8px;padding:9px;outline:none}.market-tab{border:1px solid var(--line);background:var(--panel);color:var(--muted);padding:9px 14px;border-radius:999px;cursor:pointer;font-weight:800}.market-tab.active{color:#fff;background:#241c3d;border-color:#6b4ec2}.toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px}.filters{display:flex;gap:8px;flex-wrap:wrap}.filter{border:1px solid var(--line);background:var(--panel);color:var(--muted);padding:8px 12px;border-radius:999px;cursor:pointer}.filter.active{color:#fff;background:#241c3d;border-color:#6b4ec2}.search{background:var(--panel);border:1px solid var(--line);color:#fff;padding:10px 13px;border-radius:11px;min-width:270px;outline:none}
 .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.card{background:linear-gradient(180deg,rgba(21,27,37,.98),rgba(13,17,24,.98));border:1px solid var(--line);border-radius:18px;padding:17px;box-shadow:0 15px 40px rgba(0,0,0,.18)}.card.hot{border-color:#5b46a5;box-shadow:0 0 0 1px rgba(139,92,246,.16),0 20px 48px rgba(0,0,0,.25)}
 .head{display:flex;justify-content:space-between;gap:10px}.token{display:flex;gap:12px;align-items:center}.avatar{width:44px;height:44px;border-radius:13px;background:linear-gradient(135deg,#8b5cf6,#22d3ee);display:grid;place-items:center;font-weight:900}.sym{font-size:18px;font-weight:850}.name{font-size:12px;color:var(--muted);margin-top:2px;max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.score{text-align:right}.score b{font-size:26px}.score small{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.08em}
 .badges{display:flex;gap:6px;flex-wrap:wrap;margin:14px 0}.badge{padding:5px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--muted)}.green{color:#86efac;border-color:#1f6a3a;background:rgba(34,197,94,.08)}.yellow{color:#fcd34d;border-color:#795517;background:rgba(245,158,11,.08)}.red{color:#fca5a5;border-color:#7f3030;background:rgba(239,68,68,.08)}
@@ -24,7 +24,12 @@
 <div class="wrap">
 <div class="top"><div class="brand"><h1>MARKET SCANNER <span style="color:#8b5cf6">/ MULTI-ASSET</span></h1><p>Crypto + Stocks · realtime monitoring · momentum · volume · market data</p></div><div class="status"><i class="dot"></i><span id="status">Connessione a DexScreener…</span></div></div>
 <div class="stats"><div class="stat"><span>Coppie analizzate</span><strong id="pairs">—</strong></div><div class="stat"><span>Candidati</span><strong id="candidates">—</strong></div><div class="stat"><span>Strong</span><strong id="strong">—</strong></div><div class="stat"><span>Ultimo refresh</span><strong id="refresh">—</strong></div></div>
-<div class="market-tabs"><button class="market-tab active" data-market="crypto">🪙 CRYPTO</button><button class="market-tab" data-market="markets">📈 MARKETS</button></div><div class="toolbar"><div class="filters"><button class="filter active" data-filter="all">Tutti</button><button class="filter" data-filter="strong">🔥 Strong</button><button class="filter" data-filter="interesting">🟢 Interesting</button><button class="filter" data-filter="watch">🟡 Watch</button><button id="freshFilter" class="filter" data-filter="fresh">🆕 &lt;24h</button></div><input id="search" class="search" placeholder="Cerca simbolo, nome o contract…"></div>
+<div class="market-tabs"><button class="market-tab active" data-market="crypto">🪙 CRYPTO</button><button class="market-tab" data-market="markets">📈 MARKETS</button></div>
+<div id="riskSettings" class="settings-panel">
+ <div class="setting"><label>Capitale trading €</label><input id="capitalInput" type="number" min="100" step="100" value="2000"></div>
+ <div class="setting"><label>Rischio per trade %</label><input id="riskInput" type="number" min="0.25" max="5" step="0.25" value="1"></div>
+ <div class="setting"><label>Max posizione %</label><input id="maxPositionInput" type="number" min="1" max="50" step="1" value="10"></div>
+</div><div class="toolbar"><div class="filters"><button class="filter active" data-filter="all">Tutti</button><button class="filter" data-filter="strong">🔥 Strong</button><button class="filter" data-filter="interesting">🟢 Interesting</button><button class="filter" data-filter="watch">🟡 Watch</button><button id="freshFilter" class="filter" data-filter="fresh">🆕 &lt;24h</button></div><input id="search" class="search" placeholder="Cerca simbolo, nome o contract…"></div>
 <div id="grid" class="grid"><div class="empty">Scansione DexScreener in corso…</div></div>
 <div class="footer">Crypto: DexScreener + Solana WebSocket · Markets: Biquote WebSocket · Terminal per il trading crypto.</div>
 </div>
@@ -52,6 +57,8 @@ let marketPairs=[];
 let marketSymbols=[];
 let marketConnection=null;
 let marketReconnectTimer=null;
+const RISK_KEY="market_scanner_risk_v1";
+let riskConfig=loadRiskConfig();
 let ws=null;
 let wsSubIds=new Map();
 let wsPairBySub=new Map();
@@ -201,6 +208,52 @@ function closeRealtimeSocket(){
  wsTokenByPair=new Map();
 }
 
+function loadRiskConfig(){
+ try{
+  const v=JSON.parse(localStorage.getItem(RISK_KEY)||"{}");
+  return {
+   capital:Number.isFinite(Number(v.capital))?Number(v.capital):2000,
+   riskPct:Number.isFinite(Number(v.riskPct))?Number(v.riskPct):1,
+   maxPosPct:Number.isFinite(Number(v.maxPosPct))?Number(v.maxPosPct):10
+  };
+ }catch(e){return {capital:2000,riskPct:1,maxPosPct:10}}
+}
+
+function saveRiskConfig(){
+ try{localStorage.setItem(RISK_KEY,JSON.stringify(riskConfig))}catch(e){}
+}
+
+function clamp(v,min,max){return Math.max(min,Math.min(max,v))}
+
+function marketPlan(s){
+ const price=n(s.price);
+ const rangePct=price?(Math.max(0,n(s.high)-n(s.low))/price*100):0;
+ const ch=n(s.change);
+ let mode="DEFENSIVE";
+ let stopPct=clamp(rangePct*.75,3.5,8);
+ if(ch>=3&&rangePct>=2.5){
+  mode="MOMENTUM";
+  stopPct=clamp(rangePct*.9,4,10);
+ }else if(ch>0){
+  mode="TREND";
+  stopPct=clamp(rangePct*.8,4,8);
+ }
+ const riskEuro=Math.max(0,riskConfig.capital*riskConfig.riskPct/100);
+ const byRisk=stopPct>0?riskEuro/(stopPct/100):0;
+ const maxPosition=riskConfig.capital*riskConfig.maxPosPct/100;
+ const suggested=Math.max(0,Math.min(byRisk,maxPosition));
+ const tp1=stopPct*1.5,tp2=stopPct*2.5,tp3=stopPct*4;
+ const trailing=clamp(stopPct*1.25,5,15);
+ return {mode,stopPct,tp1,tp2,tp3,trailing,riskEuro,suggested,maxPosition,rangePct};
+}
+
+function updateRiskInputs(){
+ const a=document.getElementById("capitalInput"),r=document.getElementById("riskInput"),m=document.getElementById("maxPositionInput");
+ if(a)a.value=riskConfig.capital;
+ if(r)r.value=riskConfig.riskPct;
+ if(m)m.value=riskConfig.maxPosPct;
+}
+
 async function discoverMarkets(){
  const active=await fetch(MARKET_API+"/active",{cache:"no-store"}).then(function(r){
   if(!r.ok)throw new Error("Biquote HTTP "+r.status);
@@ -315,22 +368,22 @@ function renderMarkets(){
   const q=currentQuery.toLowerCase();
   const text=(s.symbol+" "+s.name+" "+s.type).toLowerCase();
   const hit=!q||text.includes(q);
-  const f=currentFilter==="all"||
-   (currentFilter==="strong"&&s._level==="STRONG")||
-   (currentFilter==="interesting"&&s._level==="INTERESTING")||
-   (currentFilter==="watch"&&s._level==="WATCH");
+  const f=currentFilter==="all"||(currentFilter==="strong"&&s._level==="STRONG")||(currentFilter==="interesting"&&s._level==="INTERESTING")||(currentFilter==="watch"&&s._level==="WATCH");
   return hit&&f;
  }).sort(function(a,b){return b._m.score-a._m.score});
  if(!list.length){document.getElementById("grid").innerHTML='<div class="empty">Nessun mercato corrisponde ai filtri.</div>';return}
  document.getElementById("grid").innerHTML=list.map(function(s){
-  const hot=s._level==="STRONG";
+  const hot=s._level==="STRONG",plan=marketPlan(s);
   return '<article class="card'+(hot?" hot":"")+'"><div class="head"><div class="token"><div class="avatar">'+esc(s.symbol.slice(0,2))+'</div><div><div class="sym">'+esc(s.symbol)+'</div><div class="name" title="'+esc(s.name)+'">'+esc(s.name)+'</div></div></div><div class="score"><b>'+s._m.score+'</b><small>score</small></div></div>'+
-  '<div class="badges"><span class="badge '+(hot?"red":(s._level==="WATCH"?"yellow":"green"))+'">'+(hot?"🔥 STRONG":(s._level==="WATCH"?"🟡 WATCH":"🟢 INTERESTING"))+'</span><span class="badge">'+esc(s.type)+'</span><span class="badge">'+(s.marketState==="open"?"LIVE":"CLOSED")+'</span></div>'+
-  '<div class="metrics"><div class="metric"><span>Prezzo</span><strong>'+money(s.price)+'</strong></div><div class="metric"><span>Variazione</span><strong>'+pct(s.change)+'</strong></div><div class="metric"><span>Range</span><strong>'+((s.price?(s.high-s.low)/s.price*100:0)).toFixed(2)+'%</strong></div></div>'+
+  '<div class="badges"><span class="badge '+(hot?"red":(s._level==="WATCH"?"yellow":"green"))+'">'+(hot?"🔥 STRONG":(s._level==="WATCH"?"🟡 WATCH":"🟢 INTERESTING"))+'</span><span class="badge">'+esc(s.type)+'</span><span class="badge">'+(s.marketState==="open"?"LIVE":"CLOSED")+'</span><span class="badge">'+esc(plan.mode)+'</span></div>'+
+  '<div class="metrics"><div class="metric"><span>Prezzo</span><strong>'+money(s.price)+'</strong></div><div class="metric"><span>Variazione</span><strong>'+pct(s.change)+'</strong></div><div class="metric"><span>Range</span><strong>'+plan.rangePct.toFixed(2)+'%</strong></div></div>'+
   '<div class="rows"><div class="row"><span>High / Low</span><b>'+money(s.high)+' / '+money(s.low)+'</b></div><div class="row"><span>Spread</span><b>'+money(s.spread)+'</b></div><div class="row"><span>Direzione</span><b>'+((s.change>0)?"UP":(s.change<0?"DOWN":"FLAT"))+'</b></div><div class="row"><span>Aggiornamento</span><b>'+esc(s.timestamp?new Date(s.timestamp).toLocaleTimeString("it-IT"):"—")+'</b></div></div>'+
-  '<div class="actions"><a class="buy" href="https://invest.revolut.com/" target="_blank" rel="noopener">📈 APRI REVOLUT</a></div></article>';
+  '<div class="metrics"><div class="metric"><span>💰 Size suggerita</span><strong>€'+plan.suggested.toFixed(0)+'</strong></div><div class="metric"><span>🛑 Stop</span><strong>-'+plan.stopPct.toFixed(1)+'%</strong></div><div class="metric"><span>🛡️ Trailing</span><strong>-'+plan.trailing.toFixed(1)+'%</strong></div></div>'+
+  '<div class="rows"><div class="row"><span>TP1</span><b>+'+plan.tp1.toFixed(1)+'% · 30%</b></div><div class="row"><span>TP2</span><b>+'+plan.tp2.toFixed(1)+'% · 30%</b></div><div class="row"><span>TP3</span><b>+'+plan.tp3.toFixed(1)+'% · 30%</b></div><div class="row"><span>Runner</span><b>10% · trailing '+plan.trailing.toFixed(1)+'%</b></div></div>'+
+  '<div class="actions"><a class="buy" href="https://freedom24.com/?site_lang=it" target="_blank" rel="noopener">📈 APRI FREEDOM24</a></div></article>';
  }).join("");
 }
+
 
 function connectRealtimeSocket(){
  closeRealtimeSocket();
@@ -474,6 +527,19 @@ document.querySelectorAll(".market-tab").forEach(function(b){
   }
  };
 });
+["capitalInput","riskInput","maxPositionInput"].forEach(function(id){
+ const el=document.getElementById(id);
+ if(el)el.oninput=function(e){
+  const v=Number(e.target.value);
+  if(id==="capitalInput")riskConfig.capital=Math.max(100,v||100);
+  if(id==="riskInput")riskConfig.riskPct=clamp(v||1,.25,5);
+  if(id==="maxPositionInput")riskConfig.maxPosPct=clamp(v||10,1,50);
+  saveRiskConfig();
+  render();
+ };
+});
+updateRiskInputs();
+
 document.querySelectorAll(".filter").forEach(function(b){b.onclick=function(){document.querySelectorAll(".filter").forEach(function(x){x.classList.remove("active")});b.classList.add("active");currentFilter=b.dataset.filter;render()}});
 document.getElementById("search").oninput=function(e){currentQuery=e.target.value;render()};
 
