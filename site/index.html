@@ -22,11 +22,11 @@
 </head>
 <body>
 <div class="wrap">
-<div class="top"><div class="brand"><h1>MEMECOIN SCANNER <span style="color:#8b5cf6">/ SOLANA</span></h1><p>DexScreener live filter · momentum · liquidity · buy pressure</p></div><div class="status"><i class="dot"></i><span id="status">Connessione a DexScreener…</span></div></div>
+<div class="top"><div class="brand"><h1>MEMECOIN SCANNER <span style="color:#8b5cf6">/ SOLANA</span></h1><p>DexScreener discovery · Solana WebSocket realtime · momentum · liquidity · buy pressure</p></div><div class="status"><i class="dot"></i><span id="status">Connessione a DexScreener…</span></div></div>
 <div class="stats"><div class="stat"><span>Coppie analizzate</span><strong id="pairs">—</strong></div><div class="stat"><span>Candidati</span><strong id="candidates">—</strong></div><div class="stat"><span>Strong</span><strong id="strong">—</strong></div><div class="stat"><span>Ultimo refresh</span><strong id="refresh">—</strong></div></div>
 <div class="toolbar"><div class="filters"><button class="filter active" data-filter="all">Tutti</button><button class="filter" data-filter="strong">🔥 Strong</button><button class="filter" data-filter="interesting">🟢 Interesting</button><button class="filter" data-filter="watch">🟡 Watch</button><button class="filter" data-filter="fresh">🆕 &lt;24h</button></div><input id="search" class="search" placeholder="Cerca simbolo, nome o contract…"></div>
 <div id="grid" class="grid"><div class="empty">Scansione DexScreener in corso…</div></div>
-<div class="footer">Dati direttamente da DexScreener. Il pulsante Terminal apre direttamente la pagina del token.</div>
+<div class="footer">Discovery DexScreener ogni 30s · aggiornamento realtime via Solana WebSocket · Terminal per il trading.</div>
 </div>
 
 
@@ -35,11 +35,23 @@ const API="https://api.dexscreener.com";
 const PROFILE_LIMIT=150;
 const BATCH=25;
 const DISCOVERY_MS=30000;
-const MONITOR_MS=3000;
+const WS_URL="wss://api.mainnet.solana.com/";
+const WS_MAX_PAIRS=40;
+const WS_REFRESH_DEBOUNCE_MS=700;
+const WS_RECONNECT_MS=5000;
+const FALLBACK_MONITOR_MS=10000;
 const STATE_KEY="memecoin_scanner_v1";
 let allPairs=[];
 let currentFilter="all";
 let currentQuery="";
+let ws=null;
+let wsSubIds=new Map();
+let wsPairBySub=new Map();
+let wsPending=new Set();
+let wsFlushTimer=null;
+let wsReconnectTimer=null;
+let wsGeneration=0;
+let fallbackTimer=null;
 
 function n(x){const v=Number(x);return Number.isFinite(v)?v:0}
 function money(x){return new Intl.NumberFormat("it-IT",{notation:"compact",maximumFractionDigits:1}).format(n(x))}
@@ -109,6 +121,140 @@ function render(){
  }).join("");
 }
 
+function setStatus(text){document.getElementById("status").textContent=text}
+
+function updateStats(){
+ document.getElementById("candidates").textContent=allPairs.length;
+ document.getElementById("strong").textContent=allPairs.filter(function(p){return p._level==="STRONG"}).length;
+}
+
+function rankRealtimePairs(){
+ allPairs.sort(function(a,b){return b._m.score-a._m.score});
+}
+
+async function refreshRealtimeAddresses(addresses){
+ const unique=[...new Set(addresses.filter(Boolean))];
+ if(!unique.length)return;
+ const chunks=[];
+ for(let i=0;i<unique.length;i+=BATCH)chunks.push(unique.slice(i,i+BATCH));
+ try{
+  const old=previous();
+  const responses=await Promise.all(chunks.map(function(chunk){
+   return getJSON(API+"/tokens/v1/solana/"+chunk.join(","));
+  }));
+  const livePairs=responses.flat().filter(function(p){
+   return String(p.chainId||"").toLowerCase()==="solana";
+  });
+  const liveByToken=new Map();
+  for(const p of livePairs){
+   const addr=p.baseToken?.address;
+   if(addr)liveByToken.set(addr,p);
+  }
+  const merged=[];
+  for(const current of allPairs){
+   const addr=current.baseToken?.address;
+   const live=addr?liveByToken.get(addr):null;
+   if(live && passes(live)){
+    const enriched=enrich(live,old);
+    if(classify(enriched)) merged.push(enriched);
+   }
+  }
+  allPairs=merged;
+  rankRealtimePairs();
+  updateStats();
+  document.getElementById("refresh").textContent=new Date().toLocaleTimeString("it-IT");
+  setStatus("Live · Solana WS");
+  render();
+ }catch(e){
+  setStatus("WS attivo · refresh dati in errore");
+ }
+}
+
+function queueRealtimeRefresh(address){
+ wsPending.add(address);
+ if(wsFlushTimer)return;
+ wsFlushTimer=setTimeout(async function(){
+  wsFlushTimer=null;
+  const addresses=[...wsPending];
+  wsPending.clear();
+  await refreshRealtimeAddresses(addresses);
+ },WS_REFRESH_DEBOUNCE_MS);
+}
+
+function closeRealtimeSocket(){
+ wsGeneration++;
+ if(wsReconnectTimer){clearTimeout(wsReconnectTimer);wsReconnectTimer=null}
+ if(ws)try{ws.close()}catch(e){}
+ ws=null;
+ wsSubIds=new Map();
+ wsPairBySub=new Map();
+}
+
+function connectRealtimeSocket(){
+ closeRealtimeSocket();
+ if(!allPairs.length){setStatus("Live · attesa discovery");return}
+ const generation=wsGeneration;
+ const pairs=[...allPairs]
+   .filter(function(p){return p.pairAddress})
+   .sort(function(a,b){return b._m.score-a._m.score})
+   .slice(0,WS_MAX_PAIRS);
+
+ try{
+  ws=new WebSocket(WS_URL);
+ }catch(e){
+  setStatus("WS non disponibile · fallback");
+  return;
+ }
+
+ ws.onopen=function(){
+  if(generation!==wsGeneration)return;
+  setStatus("Live · Solana WS connesso");
+  pairs.forEach(function(p,i){
+   const id=i+1;
+   wsSubIds.set(p.pairAddress,id);
+   wsPairBySub.set(id,p.pairAddress);
+   ws.send(JSON.stringify({
+    jsonrpc:"2.0",
+    id:id,
+    method:"logsSubscribe",
+    params:[{mentions:[p.pairAddress]},{commitment:"processed"}]
+   }));
+  });
+ };
+
+ ws.onmessage=function(event){
+  if(generation!==wsGeneration)return;
+  try{
+   const msg=JSON.parse(event.data);
+   if(msg.method!=="logsNotification")return;
+   const pair=wsPairBySub.get(msg.params?.subscription);
+   if(pair)queueRealtimeRefresh(pair);
+  }catch(e){}
+ };
+
+ ws.onerror=function(){
+  if(generation!==wsGeneration)return;
+  setStatus("WS in errore · fallback");
+ };
+
+ ws.onclose=function(){
+  if(generation!==wsGeneration)return;
+  setStatus("WS riconnessione…");
+  if(wsReconnectTimer)return;
+  wsReconnectTimer=setTimeout(function(){
+   wsReconnectTimer=null;
+   connectRealtimeSocket();
+  },WS_RECONNECT_MS);
+ };
+}
+
+function startFallbackMonitor(){
+ if(fallbackTimer)return;
+ fallbackTimer=setInterval(function(){
+  if(!ws || ws.readyState!==WebSocket.OPEN) monitorScan();
+ },FALLBACK_MONITOR_MS);
+}
+
 async function dedupeAndRank(pairs,old){
  const filtered=pairs.filter(passes).map(function(p){return enrich(p,old)}).filter(classify);
  filtered.sort(function(a,b){return b._m.score-a._m.score});
@@ -158,7 +304,7 @@ async function monitorScan(){
   document.getElementById("candidates").textContent=allPairs.length;
   document.getElementById("strong").textContent=allPairs.filter(function(p){return p._level==="STRONG"}).length;
   document.getElementById("refresh").textContent=new Date().toLocaleTimeString("it-IT");
-  document.getElementById("status").textContent="Live · dati ogni 3s · discovery ogni 30s";
+  document.getElementById("status").textContent="Live · fallback 10s · Solana WS";
   render();
  }catch(e){
   document.getElementById("status").textContent="Live · monitor in pausa";
@@ -170,7 +316,6 @@ document.getElementById("search").oninput=function(e){currentQuery=e.target.valu
 
 discoverScan();
 setInterval(discoverScan,DISCOVERY_MS);
-setInterval(monitorScan,MONITOR_MS);
 </script>
 </body>
 </html>
