@@ -1926,6 +1926,10 @@ def main():
         if sec.get("quality_flags"):
             print("  Structural risk:", " | ".join(sec["quality_flags"]))
 
+    try:
+        auto_trade_best_candidate(rows)
+    except Exception as e:
+        print(f"[TRADING] ERRORE BUY: {type(e).__name__}: {e}")
     # TELEGRAM ALERT ENGINE
     # Tre livelli. La Security viene riutilizzata da p["_security_result"]
     # per evitare seconde chiamate GoPlus.
@@ -2083,10 +2087,6 @@ def main():
     else:
         print("\nNessun alert Telegram in questa scansione.")
 
-    try:
-        auto_trade_best_candidate(rows)
-    except Exception as e:
-        print(f"[TRADING] ERRORE BUY: {type(e).__name__}: {e}")
 
 if __name__=="__main__":
     try:
