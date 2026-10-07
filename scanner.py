@@ -6,7 +6,7 @@ STATE=os.path.join(DIR,"scanner_state.json"); TGSTATE=os.path.join(DIR,"telegram
 CHAIN="solana"; MIN_LIQ=20000; MIN_MC=20000; MAX_MC=10000000; MIN_VOL24=20000; TOP_N=15
 BOT=os.getenv("TELEGRAM_BOT_TOKEN","").strip(); CHAT=os.getenv("TELEGRAM_CHAT_ID","").strip()
 HELIUS_API_KEY=os.getenv("HELIUS_API_KEY","").strip()
-SOLANA_RPC=os.getenv("SOLANA_RPC_URL","").strip() or (f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else "https://api.mainnet-beta.solana.com")
+SOLANA_RPC=os.getenv("SOLANA_RPC_URL","").strip() or (f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else "")
 S=requests.Session(); S.headers.update({"User-Agent":"MemecoinScanner/4.0"})
 
 def n(x):
@@ -149,7 +149,10 @@ def discover():
 SOLANA_RPC=os.getenv("SOLANA_RPC_URL","https://api.mainnet.solana.com").strip()
 
 def rpc_batch(calls):
+    if not SOLANA_RPC:
+        raise RuntimeError("HELIUS_API_KEY non configurata: impossibile usare Solana RPC")
     try:
+        print("[ONCHAIN] RPC: " + ("Helius" if "helius" in SOLANA_RPC else "custom"))
         r=S.post(SOLANA_RPC,json=[
             {"jsonrpc":"2.0","id":i+1,"method":m,"params":p}
             for i,(m,p) in enumerate(calls)
