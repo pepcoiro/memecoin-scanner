@@ -258,6 +258,14 @@ def security_batch(rows):
             print(f"[ONCHAIN] {addr} PARSE ERROR: {type(e).__name__}: {e}")
     return out
 
+JUPITER_SOL="So11111111111111111111111111111111111111112"
+
+def jupiter_url(p):
+    addr=(p.get("baseToken") or {}).get("address","").strip()
+    if not addr:
+        return ""
+    return f"https://jup.ag/swap?buy={addr}&sell={JUPITER_SOL}"
+
 def alert(p,level):
     t=p.get("baseToken") or {};m=p["_m"];pc=p.get("priceChange") or {};usd,sol=max_position(p)
     return "\n".join([
@@ -273,12 +281,16 @@ def alert(p,level):
         "","🎯 MAX PUNTATA TEORICA: {}".format(sol if sol>=1 else sol),
         "   USD stimati: {:.0f} | price impact teorico <=2%".format(usd),"","🛡️ SECURITY: PASS",f"🔗 {p.get('url','')}"])
 
-def send(text,pair):
+def send(text,pair,p=None):
     if not BOT or not CHAT:return False
     st=load(TGSTATE,{})
     if n(st.get(pair)) and time.time()-n(st[pair])<3600:return False
     try:
-        r=S.post(f"https://api.telegram.org/bot{BOT}/sendMessage",json={"chat_id":CHAT,"text":text,"disable_web_page_preview":False},timeout=TIMEOUT)
+        payload={"chat_id":CHAT,"text":text,"disable_web_page_preview":False}
+        jup=jupiter_url(p or {})
+        if jup:
+            payload["reply_markup"]={"inline_keyboard":[[{"text":"🟣 COMPRA SU JUPITER","url":jup}]]}
+        r=S.post(f"https://api.telegram.org/bot{BOT}/sendMessage",json=payload,timeout=TIMEOUT)
         if r.status_code!=200:return False
         if not r.json().get("ok"):return False
         st[pair]=time.time();save(TGSTATE,st);print("[Telegram] Alert inviato.");return True
