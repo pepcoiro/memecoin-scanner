@@ -53,10 +53,11 @@ jobs:
       - name: Run scanner
         env:
           HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
+          JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
         run: python scanner.py
 
       - name: Upload dashboard
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: ./site
 
