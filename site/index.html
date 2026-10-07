@@ -328,7 +328,7 @@ function renderMarkets(){
   '<div class="badges"><span class="badge '+(hot?"red":(s._level==="WATCH"?"yellow":"green"))+'">'+(hot?"🔥 STRONG":(s._level==="WATCH"?"🟡 WATCH":"🟢 INTERESTING"))+'</span><span class="badge">'+esc(s.type)+'</span><span class="badge">'+(s.marketState==="open"?"LIVE":"CLOSED")+'</span></div>'+
   '<div class="metrics"><div class="metric"><span>Prezzo</span><strong>'+money(s.price)+'</strong></div><div class="metric"><span>Variazione</span><strong>'+pct(s.change)+'</strong></div><div class="metric"><span>Range</span><strong>'+((s.price?(s.high-s.low)/s.price*100:0)).toFixed(2)+'%</strong></div></div>'+
   '<div class="rows"><div class="row"><span>High / Low</span><b>'+money(s.high)+' / '+money(s.low)+'</b></div><div class="row"><span>Spread</span><b>'+money(s.spread)+'</b></div><div class="row"><span>Direzione</span><b>'+((s.change>0)?"UP":(s.change<0?"DOWN":"FLAT"))+'</b></div><div class="row"><span>Aggiornamento</span><b>'+esc(s.timestamp?new Date(s.timestamp).toLocaleTimeString("it-IT"):"—")+'</b></div></div>'+
-  '</article>';
+  '<div class="actions"><a class="buy" href="https://invest.revolut.com/" target="_blank" rel="noopener">📈 APRI REVOLUT</a></div></article>';
  }).join("");
 }
 
