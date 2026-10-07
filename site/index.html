@@ -13,7 +13,7 @@
 .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.card{background:linear-gradient(180deg,rgba(21,27,37,.98),rgba(13,17,24,.98));border:1px solid var(--line);border-radius:18px;padding:17px;box-shadow:0 15px 40px rgba(0,0,0,.18)}.card.hot{border-color:#5b46a5;box-shadow:0 0 0 1px rgba(139,92,246,.16),0 20px 48px rgba(0,0,0,.25)}
 .head{display:flex;justify-content:space-between;gap:10px}.token{display:flex;gap:12px;align-items:center}.avatar{width:44px;height:44px;border-radius:13px;background:linear-gradient(135deg,#8b5cf6,#22d3ee);display:grid;place-items:center;font-weight:900}.sym{font-size:18px;font-weight:850}.name{font-size:12px;color:var(--muted);margin-top:2px;max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.score{text-align:right}.score b{font-size:26px}.score small{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.08em}
 .badges{display:flex;gap:6px;flex-wrap:wrap;margin:14px 0}.badge{padding:5px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line);color:var(--muted)}.green{color:#86efac;border-color:#1f6a3a;background:rgba(34,197,94,.08)}.yellow{color:#fcd34d;border-color:#795517;background:rgba(245,158,11,.08)}.red{color:#fca5a5;border-color:#7f3030;background:rgba(239,68,68,.08)}
-.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:13px 0}.metric{background:#0c1017;border:1px solid #1d2531;border-radius:11px;padding:9px}.metric span{display:block;color:var(--muted);font-size:10px}.metric strong{display:block;margin-top:3px;font-size:14px}.rows{display:grid;gap:7px;margin:12px 0 15px}.row{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:12px}.row b{color:#e9edf5}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:13px 0}.metric{background:#0c1017;border:1px solid #1d2531;border-radius:11px;padding:9px}.metric span{display:block;color:var(--muted);font-size:10px}.metric strong{display:block;margin-top:3px;font-size:14px}.rows{display:grid;gap:7px;margin:12px 0 15px}.planrow{border:1px solid #202936;background:#0c1017;border-radius:11px;padding:10px;font-size:11px;color:#aeb7c4;text-align:center}.planrow b{color:#fff}.row{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:12px}.row b{color:#e9edf5}
 .actions{display:flex;gap:8px}.buy{flex:1;text-decoration:none;text-align:center;background:linear-gradient(135deg,#8b5cf6,#6f3ff2);color:#fff;font-weight:850;padding:11px;border-radius:10px}.dex{color:#c0c8d4;text-decoration:none;border:1px solid #2b3441;padding:11px 12px;border-radius:10px}
 .empty{grid-column:1/-1;padding:60px 20px;text-align:center;border:1px dashed var(--line);border-radius:18px;color:var(--muted)}.footer{margin-top:20px;color:var(--muted);font-size:11px;text-align:center}
 
@@ -26,12 +26,12 @@
 <div class="stats"><div class="stat"><span>Coppie analizzate</span><strong id="pairs">—</strong></div><div class="stat"><span>Candidati</span><strong id="candidates">—</strong></div><div class="stat"><span>Strong</span><strong id="strong">—</strong></div><div class="stat"><span>Ultimo refresh</span><strong id="refresh">—</strong></div></div>
 <div class="market-tabs"><button class="market-tab active" data-market="crypto">🪙 CRYPTO</button><button class="market-tab" data-market="markets">📈 MARKETS</button></div>
 <div id="riskSettings" class="settings-panel">
- <div class="setting"><label>Capitale trading €</label><input id="capitalInput" type="number" min="100" step="100" value="2000"></div>
- <div class="setting"><label>Rischio per trade %</label><input id="riskInput" type="number" min="0.25" max="5" step="0.25" value="1"></div>
+ <div class="setting"><label>Capitale disponibile €</label><input id="capitalInput" type="number" min="100" step="100" value="2000"></div>
+ <div class="setting"><label>Rischio / trade %</label><input id="riskInput" type="number" min="0.25" max="5" step="0.25" value="1"></div>
  <div class="setting"><label>Max posizione %</label><input id="maxPositionInput" type="number" min="1" max="50" step="1" value="10"></div>
 </div><div class="toolbar"><div class="filters"><button class="filter active" data-filter="all">Tutti</button><button class="filter" data-filter="strong">🔥 Strong</button><button class="filter" data-filter="interesting">🟢 Interesting</button><button class="filter" data-filter="watch">🟡 Watch</button><button id="freshFilter" class="filter" data-filter="fresh">🆕 &lt;24h</button></div><input id="search" class="search" placeholder="Cerca simbolo, nome o contract…"></div>
 <div id="grid" class="grid"><div class="empty">Scansione DexScreener in corso…</div></div>
-<div class="footer">Crypto: DexScreener + Solana WebSocket · Markets: Biquote WebSocket · Terminal per il trading crypto.</div>
+<div class="footer">Crypto: DexScreener + Solana WebSocket · Markets: Biquote WebSocket · eToro per il trading azionario.</div>
 </div>
 
 
@@ -368,19 +368,29 @@ function renderMarkets(){
   const q=currentQuery.toLowerCase();
   const text=(s.symbol+" "+s.name+" "+s.type).toLowerCase();
   const hit=!q||text.includes(q);
-  const f=currentFilter==="all"||(currentFilter==="strong"&&s._level==="STRONG")||(currentFilter==="interesting"&&s._level==="INTERESTING")||(currentFilter==="watch"&&s._level==="WATCH");
+  const f=currentFilter==="all"||
+   (currentFilter==="strong"&&s._level==="STRONG")||
+   (currentFilter==="interesting"&&s._level==="INTERESTING")||
+   (currentFilter==="watch"&&s._level==="WATCH");
   return hit&&f;
  }).sort(function(a,b){return b._m.score-a._m.score});
- if(!list.length){document.getElementById("grid").innerHTML='<div class="empty">Nessun mercato corrisponde ai filtri.</div>';return}
+ if(!list.length){
+  document.getElementById("grid").innerHTML='<div class="empty">Nessun mercato corrisponde ai filtri.</div>';
+  return;
+ }
  document.getElementById("grid").innerHTML=list.map(function(s){
   const hot=s._level==="STRONG",plan=marketPlan(s);
-  return '<article class="card'+(hot?" hot":"")+'"><div class="head"><div class="token"><div class="avatar">'+esc(s.symbol.slice(0,2))+'</div><div><div class="sym">'+esc(s.symbol)+'</div><div class="name" title="'+esc(s.name)+'">'+esc(s.name)+'</div></div></div><div class="score"><b>'+s._m.score+'</b><small>score</small></div></div>'+
-  '<div class="badges"><span class="badge '+(hot?"red":(s._level==="WATCH"?"yellow":"green"))+'">'+(hot?"🔥 STRONG":(s._level==="WATCH"?"🟡 WATCH":"🟢 INTERESTING"))+'</span><span class="badge">'+esc(s.type)+'</span><span class="badge">'+(s.marketState==="open"?"LIVE":"CLOSED")+'</span><span class="badge">'+esc(plan.mode)+'</span></div>'+
-  '<div class="metrics"><div class="metric"><span>Prezzo</span><strong>'+money(s.price)+'</strong></div><div class="metric"><span>Variazione</span><strong>'+pct(s.change)+'</strong></div><div class="metric"><span>Range</span><strong>'+plan.rangePct.toFixed(2)+'%</strong></div></div>'+
-  '<div class="rows"><div class="row"><span>High / Low</span><b>'+money(s.high)+' / '+money(s.low)+'</b></div><div class="row"><span>Spread</span><b>'+money(s.spread)+'</b></div><div class="row"><span>Direzione</span><b>'+((s.change>0)?"UP":(s.change<0?"DOWN":"FLAT"))+'</b></div><div class="row"><span>Aggiornamento</span><b>'+esc(s.timestamp?new Date(s.timestamp).toLocaleTimeString("it-IT"):"—")+'</b></div></div>'+
-  '<div class="metrics"><div class="metric"><span>💰 Size suggerita</span><strong>€'+plan.suggested.toFixed(0)+'</strong></div><div class="metric"><span>🛑 Stop</span><strong>-'+plan.stopPct.toFixed(1)+'%</strong></div><div class="metric"><span>🛡️ Trailing</span><strong>-'+plan.trailing.toFixed(1)+'%</strong></div></div>'+
-  '<div class="rows"><div class="row"><span>TP1</span><b>+'+plan.tp1.toFixed(1)+'% · 30%</b></div><div class="row"><span>TP2</span><b>+'+plan.tp2.toFixed(1)+'% · 30%</b></div><div class="row"><span>TP3</span><b>+'+plan.tp3.toFixed(1)+'% · 30%</b></div><div class="row"><span>Runner</span><b>10% · trailing '+plan.trailing.toFixed(1)+'%</b></div></div>'+
-  '<div class="actions"><a class="buy" href="https://freedom24.com/?site_lang=it" target="_blank" rel="noopener">📈 APRI FREEDOM24</a></div></article>';
+  const ticker=encodeURIComponent(String(s.symbol||"").split(":").pop().toLowerCase());
+  const etoroUrl="https://www.etoro.com/it/markets/"+ticker;
+  return '<article class="card'+(hot?" hot":"")+'">'+
+   '<div class="head"><div class="token"><div class="avatar">'+esc(String(s.symbol||"?").slice(0,2))+'</div><div><div class="sym">'+esc(String(s.symbol||"?").split(":").pop())+'</div><div class="name" title="'+esc(s.name)+'">'+esc(s.name)+'</div></div></div><div class="score"><b>'+s._m.score+'</b><small>score</small></div></div>'+
+   '<div class="badges"><span class="badge '+(hot?"red":(s._level==="WATCH"?"yellow":"green"))+'">'+(hot?"🔥 STRONG":(s._level==="WATCH"?"🟡 WATCH":"🟢 INTERESTING"))+'</span><span class="badge">'+esc(s.type)+'</span></div>'+
+   '<div class="metrics"><div class="metric"><span>Prezzo</span><strong>'+money(s.price)+'</strong></div><div class="metric"><span>Oggi</span><strong>'+pct(s.change)+'</strong></div><div class="metric"><span>Range</span><strong>'+plan.rangePct.toFixed(1)+'%</strong></div></div>'+
+   '<div class="metrics"><div class="metric"><span>💰 Investimento suggerito</span><strong>€'+plan.suggested.toFixed(0)+'</strong></div><div class="metric"><span>🛑 Stop Loss</span><strong>-'+plan.stopPct.toFixed(1)+'%</strong></div><div class="metric"><span>🛡️ Trailing</span><strong>-'+plan.trailing.toFixed(1)+'%</strong></div></div>'+
+   '<div class="planrow" style="grid-template-columns:repeat(4,1fr);margin-top:12px"><span><b>TP1</b><br>+'+plan.tp1.toFixed(1)+'% · 30%</span><span><b>TP2</b><br>+'+plan.tp2.toFixed(1)+'% · 30%</span><span><b>TP3</b><br>+'+plan.tp3.toFixed(1)+'% · 30%</span><span><b>TP4</b><br>+'+(plan.tp3*1.8).toFixed(1)+'% · 10%</span></div>'+
+   '<div class="rows"><div class="row"><span>Strategia suggerita</span><b>'+esc(plan.mode)+'</b></div><div class="row"><span>Rischio massimo</span><b>€'+plan.riskEuro.toFixed(0)+'</b></div><div class="row"><span>Posizione massima</span><b>€'+plan.maxPosition.toFixed(0)+'</b></div></div>'+
+   '<div class="actions"><a class="buy" href="'+etoroUrl+'" target="_blank" rel="noopener">📈 APRI '+esc(String(s.symbol||"?").split(":").pop())+' SU ETORO</a></div>'+
+   '</article>';
  }).join("");
 }
 
