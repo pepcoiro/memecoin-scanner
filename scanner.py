@@ -8,6 +8,9 @@ RPC_BATCH_SIZE=8; RPC_RETRIES=4
 BOT=os.getenv("TELEGRAM_BOT_TOKEN","").strip(); CHAT=os.getenv("TELEGRAM_CHAT_ID","").strip()
 HELIUS_API_KEY=os.getenv("HELIUS_API_KEY","").strip()
 SOLANA_RPC=f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else ""
+JUPITER_API_KEY=os.getenv("JUPITER_API_KEY","").strip()
+JUPITER_BASE="https://api.jup.ag" if JUPITER_API_KEY else "https://lite-api.jup.ag"
+JUPITER_QUOTE_AMOUNT=10_000_000  # 0.01 SOL, solo per verificare che esista una rotta
 S=requests.Session(); S.headers.update({"User-Agent":"MemecoinScanner/4.0"})
 
 def n(x):
@@ -260,11 +263,46 @@ def security_batch(rows):
 
 JUPITER_SOL="So11111111111111111111111111111111111111112"
 
+def jupiter_quote(p):
+    addr=(p.get("baseToken") or {}).get("address","").strip()
+    if not addr:
+        return {"status":"UNVERIFIED","reason":"missing_mint","route":False}
+    try:
+        params={
+            "inputMint":JUPITER_SOL,
+            "outputMint":addr,
+            "amount":JUPITER_QUOTE_AMOUNT,
+            "slippageBps":100
+        }
+        headers={"x-api-key":JUPITER_API_KEY} if JUPITER_API_KEY else {}
+        r=S.get(f"{JUPITER_BASE}/swap/v1/quote",params=params,headers=headers,timeout=TIMEOUT)
+        if r.status_code==429:
+            return {"status":"UNVERIFIED","reason":"rate_limited","route":False}
+        if r.status_code>=400:
+            try:
+                detail=r.json().get("error") or r.json().get("message") or f"http_{r.status_code}"
+            except Exception:
+                detail=f"http_{r.status_code}"
+            return {"status":"NO_ROUTE","reason":str(detail)[:160],"route":False}
+        data=r.json()
+        route=bool(data.get("routePlan")) and n(data.get("outAmount"))>0
+        if not route:
+            return {"status":"NO_ROUTE","reason":str(data.get("error") or "no_route"),"route":False}
+        return {
+            "status":"PASS",
+            "reason":"route_found",
+            "route":True,
+            "out_amount":str(data.get("outAmount","")),
+            "route_plan":len(data.get("routePlan") or [])
+        }
+    except Exception as e:
+        return {"status":"UNVERIFIED","reason":f"{type(e).__name__}: {e}"[:160],"route":False}
+
 def jupiter_url(p):
     addr=(p.get("baseToken") or {}).get("address","").strip()
     if not addr:
         return ""
-    return f"https://jup.ag/swap?buy={addr}&sell={JUPITER_SOL}"
+    return f"https://jup.ag/swap/SOL-{addr}"
 
 def alert(p,level):
     t=p.get("baseToken") or {};m=p["_m"];pc=p.get("priceChange") or {};usd,sol=max_position(p)
@@ -309,6 +347,9 @@ def main():
         sec_label=sec["status"] if sec["status"]=="PASS" else f"{sec['status']}:{sec.get('reason','unknown')}"
         print("#{:<2} {:<10} score={:>3} burst={:>4.1f}x buy={:>5.1f}% 1h={:+6.1f}% 24h={:+7.1f}% security={}".format(i,sym,p["_score"],m["burst"],b,p1,p24,sec_label))
         if sec["status"]!="PASS" or p1>60 or p24>150 or p1<=-30 or p24<=-50:continue
+        jup=jupiter_quote(p);p["_jupiter"]=jup
+        print(f"[JUPITER] {sym} => {jup['status']} ({jup.get('reason','')})")
+        if not jup["route"]:continue
         if p["_score"]>=75 and (m["burst"]>=2 or m["has_accel"]):level="🔥 STRONG"
         elif p["_score"]>=60 and (m["burst"]>=1.5 or b>=55):level="🟢 INTERESTING"
         else:continue
